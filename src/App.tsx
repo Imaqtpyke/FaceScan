@@ -10,14 +10,11 @@ import {
   CheckCircle,
   AlertTriangle,
   AlertCircle,
-  HelpCircle,
   Clock,
   Trash2,
   Settings,
   Sparkles,
   RefreshCw,
-  Image as ImageIcon,
-  UserCheck,
   Lightbulb,
   Images
 } from 'lucide-react';
@@ -28,7 +25,7 @@ import { Preferences } from '@capacitor/preferences';
 import { Camera as CapCamera, CameraResultType, CameraSource } from '@capacitor/camera';
 
 import { ScanResult, ScreenState, CameraDirectionType } from './types';
-import { capturePhoto, preprocessImage } from './services/camera';
+import { preprocessImage } from './services/camera';
 import { getScanHistory, saveScanResult, clearScanHistory, deleteScanResult } from './services/storage';
 import { classifyCanvas, loadTeachableMachineModel } from './services/faceModel';
 
@@ -44,7 +41,7 @@ export default function App() {
   const [modelLoading, setModelLoading] = useState(true);
   const [modelError, setModelError] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [cameraDirection, setCameraDirection] = useState<CameraDirectionType>('front');
+  const [cameraDirection, setCameraDirection] = useState<CameraDirectionType>('rear');
 
   // Camera Permission / Availability State
   const [cameraPermissionDenied, setCameraPermissionDenied] = useState(false);
@@ -72,8 +69,9 @@ export default function App() {
   // Spin rotation angle tracker for flip button
   const [spinDeg, setSpinDeg] = useState(0);
 
-  // Hidden file input ref for browser preview file upload
+  // Hidden file input ref for browser file upload fallback
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const viewfinderRef = useRef<HTMLDivElement>(null);
 
   // Register real-time UTC Clock on top frame bar for authenticity
   const [simulatedTime, setSimulatedTime] = useState('');
@@ -157,46 +155,71 @@ export default function App() {
     return `${month} ${day}, ${year} · ${hours}:${minutes} ${ampm}`;
   };
 
-  // Manage CameraPreview Lifecycle
+  // Auto-show tips on home screen unless user opted out (manual toggle still works)
+  useEffect(() => {
+    if (activeScreen === 'camera' && !tipsDismissed) {
+      setTipsExpanded(true);
+    }
+  }, [activeScreen, tipsDismissed]);
+
+  // Native live camera preview lifecycle
   useEffect(() => {
     let mounted = true;
-    
+    const showCamera = isNative && activeScreen === 'camera';
+    document.body.classList.toggle('native-camera-active', showCamera);
+
+    const startPreview = async () => {
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+
+      const viewfinder = viewfinderRef.current;
+      const rect = viewfinder?.getBoundingClientRect();
+      const width = Math.max(1, Math.round(rect?.width ?? window.innerWidth));
+      const height = Math.max(1, Math.round(rect?.height ?? window.innerHeight));
+      const x = Math.round(rect?.left ?? 0);
+      const y = Math.round(rect?.top ?? 0);
+
+      await CameraPreview.start({
+        position: 'rear',
+        parent: 'camera-preview',
+        toBack: true,
+        width,
+        height,
+        x,
+        y,
+      });
+
+      if (mounted) setCameraDirection('rear');
+    };
+
     const manageCamera = async () => {
-      if (activeScreen === 'camera') {
-        if (!tipsDismissed) {
-          setTipsExpanded(true);
+      if (showCamera) {
+        try {
+          await startPreview();
+        } catch (e) {
+          console.warn('CameraPreview start error:', e);
+          if (mounted) triggerToast('Camera preview unavailable', 'warning');
         }
-        
-        if (isNative) {
-          try {
-            await CameraPreview.start({
-              position: 'rear',
-              parent: 'camera-preview',
-              toBack: true,
-            });
-            if (mounted) setCameraDirection('rear');
-          } catch (e) {
-            console.warn('CameraPreview start error:', e);
-            if (mounted) triggerToast('Camera preview unavailable', 'warning');
-          }
-        }
-      } else {
-        if (isNative) {
-          try {
-            await CameraPreview.stop();
-          } catch (e) {
-            console.warn('CameraPreview stop error:', e);
-          }
+      } else if (isNative) {
+        try {
+          await CameraPreview.stop();
+        } catch (e) {
+          console.warn('CameraPreview stop error:', e);
         }
       }
     };
-    
+
     manageCamera();
-    
+
     return () => {
       mounted = false;
+      document.body.classList.remove('native-camera-active');
+      if (isNative) {
+        CameraPreview.stop().catch(() => undefined);
+      }
     };
-  }, [activeScreen, isNative, tipsDismissed]);
+  }, [activeScreen, isNative]);
 
   // Preprocesses and classifies captured Base64 image
   const processAndClassify = async (base64Data: string) => {
@@ -257,12 +280,11 @@ export default function App() {
       let capturedBase64 = '';
       
       if (isNative) {
-        // Native CameraPreview capture
         const result = await CameraPreview.capture({ quality: 90 });
         capturedBase64 = `data:image/jpeg;base64,${result.value}`;
       } else {
-        // Browser standard web camera capture fallback
-        capturedBase64 = await capturePhoto(cameraDirection);
+        fileInputRef.current?.click();
+        return;
       }
       
       await processAndClassify(capturedBase64);
@@ -294,21 +316,42 @@ export default function App() {
     }
   };
 
-  // Action: Pick Photo from Gallery
+  // Action: Pick Photo from Gallery (native) or file picker (browser)
   const handleGalleryPick = async () => {
+    if (!isNative) {
+      fileInputRef.current?.click();
+      return;
+    }
+
     try {
       const image = await CapCamera.getPhoto({
         quality: 90,
         allowEditing: false,
         resultType: CameraResultType.DataUrl,
-        source: CameraSource.Photos
+        source: CameraSource.Photos,
       });
       if (image.dataUrl) {
         await processAndClassify(image.dataUrl);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.warn('Gallery pick cancelled or failed', err);
     }
+  };
+
+  const handleDismissTipsForever = async (checked: boolean) => {
+    setTipsDismissed(checked);
+    try {
+      await Preferences.set({
+        key: 'tips_dismissed',
+        value: checked ? 'true' : 'false',
+      });
+    } catch (err) {
+      console.warn('Failed to save tips preferences:', err);
+    }
+  };
+
+  const handleCloseTipsPanel = async () => {
+    setTipsExpanded(false);
   };
 
   // Live File Upload Handler (Fallback for browser testing)
@@ -385,12 +428,10 @@ export default function App() {
   const isHomeNative = isNative && activeScreen === 'camera';
 
   return (
-    <div className={`min-h-screen ${isHomeNative ? 'bg-transparent' : 'bg-[#090D1A]'} flex flex-col items-center justify-center font-sans text-[#F8FAFC] antialiased p-0 sm:p-4 selection:bg-blue-600 selection:text-white`} id="facescan-app-container">
-      
-      {/* Native Camera Preview Wrapper Element */}
-      {isHomeNative && (
-        <div id="camera-preview" className="fixed inset-0 z-[-1] pointer-events-none" />
-      )}
+    <div
+      className={`${isNative ? 'fixed inset-0 h-[100dvh] w-full' : 'min-h-screen'} ${isHomeNative ? 'bg-transparent' : 'bg-[#090D1A]'} flex flex-col items-stretch justify-stretch font-sans text-[#F8FAFC] antialiased ${isNative ? 'p-0' : 'p-0 sm:p-4 items-center justify-center'} selection:bg-blue-600 selection:text-white`}
+      id="facescan-app-container"
+    >
       
       {/* 1. Global Multi-Alert Toaster */}
       <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 flex flex-col gap-2 w-[340px]" id="facescan-toaster">
@@ -426,16 +467,15 @@ export default function App() {
         </AnimatePresence>
       </div>
 
-      {/* Face Simulator FAB removed from visible UI for production cleanup but logic kept intact */}
-
-      {/* 2. Sleek Smartphone Chassis Container Wrapper */}
+      {/* 2. App shell — full screen on device, phone frame in browser */}
       <div 
-        className={`w-full sm:max-w-[385px] sm:h-[812px] ${isHomeNative ? 'bg-transparent' : 'bg-[#0F172A]'} border-0 sm:border-[8px] sm:border-slate-800 rounded-none sm:rounded-[40px] shadow-2xl relative overflow-hidden flex flex-col justify-between`}
+        className={`w-full flex-1 ${isNative ? 'h-full max-w-none rounded-none border-0 shadow-none' : 'sm:max-w-[385px] sm:h-[812px] sm:border-[8px] sm:border-slate-800 sm:rounded-[40px] shadow-2xl'} ${isHomeNative ? 'bg-transparent' : 'bg-[#0F172A]'} relative overflow-hidden flex flex-col justify-between`}
         id="facescan-mobile-chassis"
+        style={isNative ? { paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' } : undefined}
       >
         
-        {/* Device Screen Header with simulated status bars */}
-        <div className={`px-5 pt-3 pb-2 flex justify-between items-center ${isHomeNative ? 'bg-transparent border-transparent' : 'bg-[#0F172A] border-b border-slate-800/40'} select-none text-xs font-mono text-[#94A3B8]`} id="mobile-notch-header">
+        {/* Device status bar */}
+        <div className={`px-5 pt-2 pb-2 flex justify-between items-center ${isHomeNative ? 'bg-transparent border-transparent' : 'bg-[#0F172A] border-b border-slate-800/40'} select-none text-xs font-mono text-[#94A3B8]`} id="mobile-notch-header">
           <div className="flex items-center gap-1 font-semibold text-emerald-500">
             <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
             <span>OFFLINE LOCAL RECOGNITION</span>
@@ -459,22 +499,7 @@ export default function App() {
             </h1>
           </div>
           <div className="flex items-center gap-2">
-            {/* Top Right Actions */}
-            {activeScreen === 'camera' && (
-              <button
-                onClick={() => setTipsExpanded((prev) => !prev)}
-                className={`p-2 rounded-xl transition relative active:scale-95 ${
-                  tipsExpanded 
-                    ? 'text-yellow-400 bg-yellow-500/10'
-                    : 'text-[#94A3B8] hover:text-[#F8FAFC] bg-[#1E293B]/60 hover:bg-[#1E293B]'
-                }`}
-                aria-label="Toggle scanning tips"
-              >
-                <Lightbulb className="w-5 h-5" />
-              </button>
-            )}
-            
-            {/* Hamburger opens scan history drawer */}
+            {/* Hamburger opens menu drawer (history + tips) */}
             <button
               onClick={() => setHistoryOpen(true)}
               className="p-2 text-[#94A3B8] hover:text-[#F8FAFC] bg-[#1E293B]/60 hover:bg-[#1E293B] rounded-xl transition relative active:scale-95"
@@ -492,7 +517,7 @@ export default function App() {
         </header>
 
         {/* 4. MAIN WORKSPACE / ROUTER VIEWS */}
-        <main className="flex-1 relative overflow-y-auto flex flex-col justify-between" id="facescan-main-content">
+        <main className={`flex-1 relative overflow-y-auto flex flex-col justify-between ${isHomeNative ? 'bg-transparent' : ''}`} id="facescan-main-content">
           
           <AnimatePresence mode="wait">
             
@@ -565,19 +590,31 @@ export default function App() {
                     <div className="flex flex-col items-center justify-center">
                       
                       {/* Interactive visual viewfinder with dynamic scan animation overlay */}
-                      <div className={`relative w-72 h-72 rounded-[40px] border-4 ${isNative ? 'border-transparent bg-transparent shadow-none' : 'border-slate-800 bg-[#1E293B]/20 shadow-inner'} overflow-hidden flex items-center justify-center group`} id="face-scanner-viewfinder">
+                      <div
+                        ref={viewfinderRef}
+                        className={`relative w-72 h-72 rounded-[40px] border-4 ${isNative ? 'border-blue-500/40 bg-transparent shadow-none' : 'border-slate-800 bg-[#1E293B]/20 shadow-inner'} overflow-hidden flex items-center justify-center group`}
+                        id="face-scanner-viewfinder"
+                      >
+                        {/* Live camera layer (native only, behind scan overlay) */}
+                        {isNative && (
+                          <div
+                            id="camera-preview"
+                            className="absolute inset-0 z-0 pointer-events-none bg-transparent"
+                            aria-hidden="true"
+                          />
+                        )}
                         
                         {/* Cool corner brackets */}
-                        <div className="absolute top-5 left-5 w-8 h-8 border-t-4 border-l-4 border-blue-500 rounded-tl-lg"></div>
-                        <div className="absolute top-5 right-5 w-8 h-8 border-t-4 border-r-4 border-blue-500 rounded-tr-lg"></div>
-                        <div className="absolute bottom-5 left-5 w-8 h-8 border-b-4 border-l-4 border-blue-500 rounded-bl-lg"></div>
-                        <div className="absolute bottom-5 right-5 w-8 h-8 border-b-4 border-r-4 border-blue-500 rounded-br-lg"></div>
+                        <div className="absolute top-5 left-5 w-8 h-8 border-t-4 border-l-4 border-blue-500 rounded-tl-lg z-20 pointer-events-none"></div>
+                        <div className="absolute top-5 right-5 w-8 h-8 border-t-4 border-r-4 border-blue-500 rounded-tr-lg z-20 pointer-events-none"></div>
+                        <div className="absolute bottom-5 left-5 w-8 h-8 border-b-4 border-l-4 border-blue-500 rounded-bl-lg z-20 pointer-events-none"></div>
+                        <div className="absolute bottom-5 right-5 w-8 h-8 border-b-4 border-r-4 border-blue-500 rounded-br-lg z-20 pointer-events-none"></div>
 
                         {/* Scanner Laser Sweep Line */}
                         <motion.div
                           animate={{ top: ['0%', '100%', '0%'] }}
                           transition={{ duration: 3.5, repeat: Infinity, ease: 'easeInOut' }}
-                          className="absolute left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-blue-500 to-transparent z-10 shadow-[0_0_8px_rgba(59,130,246,0.8)]"
+                          className="absolute left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-blue-500 to-transparent z-20 shadow-[0_0_8px_rgba(59,130,246,0.8)]"
                         ></motion.div>
 
                         {/* Static face silhouette inside bracket guide (only when NOT native) */}
@@ -616,9 +653,19 @@ export default function App() {
                   id="scanning-tips-panel"
                 >
                   <div className="bg-[#1E293B]/90 border border-slate-800 rounded-2xl p-4 shadow-xl flex flex-col gap-2.5">
-                    <p className="text-xs font-bold text-blue-400 select-none uppercase tracking-wider flex items-center gap-1.5">
-                      <Lightbulb className="w-3.5 h-3.5 text-yellow-400" /> Quick Tips
-                    </p>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-bold text-blue-400 select-none uppercase tracking-wider flex items-center gap-1.5">
+                        <Lightbulb className="w-3.5 h-3.5 text-yellow-400" /> Quick Tips
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => void handleCloseTipsPanel()}
+                        className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-slate-700/50 transition"
+                        aria-label="Close tips panel"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
                     <ul className="flex flex-col gap-2 text-xs text-slate-300">
                       <li className="flex items-start gap-2">
                         <span className="flex-shrink-0">💡</span>
@@ -643,15 +690,11 @@ export default function App() {
                         type="checkbox" 
                         id="dismiss-tips" 
                         checked={tipsDismissed}
-                        onChange={(e) => {
-                          const checked = e.target.checked;
-                          setTipsDismissed(checked);
-                          Preferences.set({ key: 'tips_dismissed', value: checked ? 'true' : 'false' });
-                        }}
+                        onChange={(e) => void handleDismissTipsForever(e.target.checked)}
                         className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-800 accent-blue-500"
                       />
                       <label htmlFor="dismiss-tips" className="text-[10px] text-slate-400 select-none cursor-pointer">
-                        Don't auto-show tips again
+                        Don&apos;t show again
                       </label>
                     </div>
                   </div>
@@ -852,11 +895,7 @@ export default function App() {
 
                   {/* Specifically RETAKE PHOTO option with camera icon */}
                   <button
-                    onClick={() => {
-                      setActiveScreen('camera');
-                      // Wait a brief tick then open simulated camera or preference
-                      setTimeout(() => handleCapturePhoto(), 100);
-                    }}
+                    onClick={() => setActiveScreen('camera')}
                     className="w-full py-3.5 bg-[#1E293B] hover:bg-[#28354c] text-[#F8FAFC] border border-slate-800 font-bold text-sm rounded-xl flex items-center justify-center gap-2 transition active:scale-95 cursor-pointer"
                     id="retake-photo-button"
                   >
@@ -910,19 +949,34 @@ export default function App() {
                 className="absolute inset-y-0 left-0 w-4/5 bg-[#1E293B] z-30 shadow-2xl flex flex-col justify-between"
                 id="history-slide-drawer"
               >
-                  {/* Drawer Title Section */}
-                  <div className="p-4 border-b border-slate-800 flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-blue-400 font-bold">
-                      <Clock className="w-4 h-4 animate-pulse" />
-                      <span className="text-sm font-sans tracking-wider uppercase">Scan History</span>
+                  {/* Drawer title + menu actions */}
+                  <div className="p-4 border-b border-slate-800 flex flex-col gap-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-sans tracking-wider uppercase text-slate-300 font-bold">Menu</span>
+                      <button
+                        onClick={() => setHistoryOpen(false)}
+                        className="p-1.5 text-slate-400 hover:text-white bg-slate-900/40 rounded-lg hover:bg-slate-900 transition active:scale-95"
+                        aria-label="Close drawer"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
                     </div>
                     <button
-                      onClick={() => setHistoryOpen(false)}
-                      className="p-1.5 text-slate-400 hover:text-white bg-slate-900/40 rounded-lg hover:bg-slate-900 transition active:scale-95"
-                      aria-label="Close drawer"
+                      type="button"
+                      onClick={() => {
+                        setTipsExpanded(true);
+                        setHistoryOpen(false);
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm font-semibold text-yellow-400 bg-yellow-500/10 border border-yellow-500/20 hover:bg-yellow-500/20 transition active:scale-[0.98]"
+                      id="menu-tips-item"
                     >
-                      <X className="w-4 h-4" />
+                      <Lightbulb className="w-4 h-4" />
+                      Tips
                     </button>
+                    <div className="flex items-center gap-2 text-blue-400 font-bold pt-1">
+                      <Clock className="w-4 h-4" />
+                      <span className="text-sm font-sans tracking-wider uppercase">Scan History</span>
+                    </div>
                   </div>
 
                   {/* Drawer List contents */}

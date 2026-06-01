@@ -22,4 +22,17 @@ html, body, #root {
   margin: 0;
   padding: 0;
   overflow: hidden;
+  background-color: #0f172a;
+}
+
+@supports (height: 100dvh) {
+  html, body, #root {
+    height: 100dvh;
+  }
+}
+
+/* Allow native camera preview (toBack) to show through the WebView */
+body.native-camera-active,
+body.native-camera-active #root {
+  background: transparent !important;
 }

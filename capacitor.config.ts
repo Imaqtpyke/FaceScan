@@ -12,7 +12,10 @@ const config: CapacitorConfig = {
       saveToGallery: false
     }
   },
-  backgroundColor: '#0F172A'
+  backgroundColor: '#0F172A',
+  android: {
+    backgroundColor: '#0F172A',
+  },
 };
 
 export default config;
