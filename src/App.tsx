@@ -32,6 +32,7 @@ import {
 } from './services/cameraStream';
 import { getScanHistory, saveScanResult, clearScanHistory, deleteScanResult } from './services/storage';
 import { classifyCanvas, loadTeachableMachineModel } from './services/faceModel';
+import { ClassBreakdown } from './components/ClassBreakdown';
 import { openAppSettings } from './utils/openAppSettings';
 
 export default function App() {
@@ -340,6 +341,9 @@ export default function App() {
         confidence: classification.confidence,
         timestamp: getFormattedDate(),
         status: classification.status,
+        topClassLabel: classification.topClassLabel,
+        classPredictions: classification.classPredictions,
+        thresholds: classification.thresholds,
       };
 
       // 4. Save scan report offline to Preferences
@@ -907,7 +911,7 @@ export default function App() {
 
                   {/* Dynamic Status card (State A, State B, State C) */}
                   {activeResult.status === 'success' && (
-                    /* State A: Match (confidence >= 75) */
+                    /* State A: Match (confidence >= high threshold) */
                     <div className="bg-[#1E293B]/70 border border-slate-800 rounded-2xl p-4 flex flex-col items-center text-center gap-2" id="results-state-a">
                       <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-400 text-xs font-bold font-sans tracking-wide">
                         <CheckCircle className="w-3.5 h-3.5" /> Successful Match
@@ -936,7 +940,7 @@ export default function App() {
                   )}
 
                   {activeResult.status === 'warning' && (
-                    /* State B: Low confidence (50-74) */
+                    /* State B: Low confidence (between low and high threshold) */
                     <div className="bg-amber-950/20 border border-amber-900/50 rounded-2xl p-4 flex flex-col items-center text-center gap-2" id="results-state-b">
                       <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-amber-500/10 text-amber-500 text-xs font-bold tracking-wide">
                         <AlertTriangle className="w-3.5 h-3.5" /> Low Confidence Scan
@@ -966,7 +970,7 @@ export default function App() {
                   )}
 
                   {activeResult.status === 'error' && (
-                    /* State C: No Face / Environment Detected (< 50) */
+                    /* State C: No Face / Environment Detected (below low threshold) */
                     <div className="bg-rose-950/20 border border-rose-900/40 rounded-2xl p-4 flex flex-col items-center text-center gap-2" id="results-state-c">
                       <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-[#F43F5E]/10 text-[#F43F5E] text-xs font-bold tracking-wide">
                         <AlertCircle className="w-3.5 h-3.5" /> No Person Detected
@@ -977,6 +981,16 @@ export default function App() {
                       </p>
                     </div>
                   )}
+
+                  {activeResult.classPredictions &&
+                    activeResult.classPredictions.length > 0 &&
+                    activeResult.thresholds && (
+                      <ClassBreakdown
+                        predictions={activeResult.classPredictions}
+                        thresholds={activeResult.thresholds}
+                        topClassLabel={activeResult.topClassLabel}
+                      />
+                    )}
 
                   {/* Scanned Timestamp Metadata */}
                   <div className="flex items-center gap-1.5 justify-center text-xs text-[#94A3B8] font-mono select-none" id="scan-metadata-footer">

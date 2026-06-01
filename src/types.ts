@@ -1,3 +1,10 @@
+export interface ClassPredictionScore {
+  classLabel: string;
+  displayName: string;
+  studentId?: string;
+  confidence: number;
+}
+
 export interface ScanResult {
   id: string;
   photoBase64: string;
@@ -5,7 +12,16 @@ export interface ScanResult {
   studentId?: string;
   confidence: number;
   timestamp: string;
-  status: 'success' | 'warning' | 'error'; // success (>= 75%), warning (50-74%), error (< 50%)
+  status: 'success' | 'warning' | 'error';
+  /** Top class label from the model (for debugging / display) */
+  topClassLabel?: string;
+  /** All class scores after analysis, highest first */
+  classPredictions?: ClassPredictionScore[];
+  /** Thresholds used when this scan was classified */
+  thresholds?: {
+    highPercent: number;
+    lowPercent: number;
+  };
 }
 
 export type ScreenState = 'camera' | 'results';

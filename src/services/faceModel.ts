@@ -1,16 +1,62 @@
 import * as tmImage from '@teachablemachine/image';
 import personsData from '../data/persons.json';
-import { CONFIDENCE_THRESHOLDS } from '../config/thresholds';
+import { CONFIDENCE_THRESHOLDS, THRESHOLD_LABELS } from '../config/thresholds';
+import type { ClassPredictionScore } from '../types';
 
 const modelUrl = '/model/model.json';
 const metadataUrl = '/model/metadata.json';
 const weightsUrl = '/model/weights.bin';
 
-export interface ClassificationResult {
+interface ResolvedMatch {
   name: string;
   studentId?: string;
-  confidence: number; // 0 to 100
+  confidence: number;
   status: 'success' | 'warning' | 'error';
+}
+
+export interface ClassificationResult extends ResolvedMatch {
+  topClassLabel: string;
+  classPredictions: ClassPredictionScore[];
+  thresholds: {
+    highPercent: number;
+    lowPercent: number;
+  };
+}
+
+function mapToClassScore(classLabel: string, probability: number): ClassPredictionScore {
+  const confidence = Math.round(probability * 100);
+  if (classLabel === 'Environment') {
+    return {
+      classLabel,
+      displayName: 'Environment (no face)',
+      confidence,
+    };
+  }
+  const person = personsData.find((p) => p.classLabel === classLabel);
+  return {
+    classLabel,
+    displayName: person?.name ?? classLabel,
+    studentId: person?.studentId ?? undefined,
+    confidence,
+  };
+}
+
+function buildClassificationResult(
+  topClassLabel: string,
+  topProbability: number,
+  allPredictions: Array<{ className: string; probability: number }>
+): ClassificationResult {
+  const resolved = resolvePrediction(topClassLabel, topProbability);
+  const classPredictions = allPredictions
+    .map((p) => mapToClassScore(p.className, p.probability))
+    .sort((a, b) => b.confidence - a.confidence);
+
+  return {
+    ...resolved,
+    topClassLabel,
+    classPredictions,
+    thresholds: { ...THRESHOLD_LABELS },
+  };
 }
 
 let loadedModel: tmImage.CustomMobileNet | null = null;
@@ -68,7 +114,7 @@ export function parseLabel(label: string): { name: string; studentId?: string } 
  * Resolves a Teachable Machine classLabel and probability using the persons.json database
  * and confidence thresholds configuration.
  */
-export function resolvePrediction(classLabel: string, probability: number): ClassificationResult {
+export function resolvePrediction(classLabel: string, probability: number): ResolvedMatch {
   const confidence = Math.round(probability * 100);
   const highThreshold = CONFIDENCE_THRESHOLDS.HIGH * 100;
   const lowThreshold = CONFIDENCE_THRESHOLDS.LOW * 100;
@@ -127,7 +173,11 @@ export async function classifyCanvas(canvas: HTMLCanvasElement): Promise<Classif
     predictions.sort((a, b) => b.probability - a.probability);
     
     const topPrediction = predictions[0];
-    return resolvePrediction(topPrediction.className, topPrediction.probability);
+    return buildClassificationResult(
+      topPrediction.className,
+      topPrediction.probability,
+      predictions
+    );
   } catch (err) {
     console.warn('Prediction error inside TFJS, switching to visual fallback heuristics.');
     
@@ -153,12 +203,22 @@ export async function classifyCanvas(canvas: HTMLCanvasElement): Promise<Classif
     // Deterministic simulation based on color palette to allow predictable web tests
     const colorHeuristic = Math.round(avgR + avgG + avgB) % 3;
 
-    if (colorHeuristic === 0) {
-      return resolvePrediction('Cedrick Ari', 0.94);
-    } else if (colorHeuristic === 1) {
-      return resolvePrediction('Rica Jean Ordoras', 0.68);
-    } else {
-      return resolvePrediction('Environment', 0.34);
-    }
+    const fallbackPredictions = [
+      { className: 'Cedrick Ari', probability: 0.94 },
+      { className: 'Rica Jean Ordoras', probability: 0.68 },
+      { className: 'Environment', probability: 0.34 },
+    ];
+    const top =
+      colorHeuristic === 0
+        ? fallbackPredictions[0]
+        : colorHeuristic === 1
+          ? fallbackPredictions[1]
+          : fallbackPredictions[2];
+
+    return buildClassificationResult(
+      top.className,
+      top.probability,
+      fallbackPredictions
+    );
   }
 }
