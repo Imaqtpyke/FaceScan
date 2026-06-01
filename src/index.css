@@ -33,6 +33,14 @@ html, body, #root {
 
 /* Allow native camera preview (toBack) to show through the WebView */
 body.native-camera-active,
-body.native-camera-active #root {
+body.native-camera-active #root,
+body.native-camera-active #facescan-app-container,
+body.native-camera-active #facescan-mobile-chassis,
+body.native-camera-active #facescan-main-content,
+body.native-camera-active #camera-view-container,
+body.native-camera-active #face-scanner-viewfinder,
+body.native-camera-active #camera-preview,
+body.native-camera-active .camera-preview {
   background: transparent !important;
+  background-color: transparent !important;
 }

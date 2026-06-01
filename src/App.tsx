@@ -28,6 +28,8 @@ import { ScanResult, ScreenState, CameraDirectionType } from './types';
 import { preprocessImage } from './services/camera';
 import { getScanHistory, saveScanResult, clearScanHistory, deleteScanResult } from './services/storage';
 import { classifyCanvas, loadTeachableMachineModel } from './services/faceModel';
+import { openAppSettings } from './utils/openAppSettings';
+import { shellBackground, transparentNative } from './utils/nativeStyles';
 
 export default function App() {
   // Screens & Navigation
@@ -69,9 +71,10 @@ export default function App() {
   // Spin rotation angle tracker for flip button
   const [spinDeg, setSpinDeg] = useState(0);
 
-  // Hidden file input ref for browser file upload fallback
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  // Browser-only file picker (never used for native capture)
+  const browserFileInputRef = useRef<HTMLInputElement>(null);
   const viewfinderRef = useRef<HTMLDivElement>(null);
+  const [cameraRetryToken, setCameraRetryToken] = useState(0);
 
   // Register real-time UTC Clock on top frame bar for authenticity
   const [simulatedTime, setSimulatedTime] = useState('');
@@ -138,6 +141,34 @@ export default function App() {
     };
   }, []);
 
+  // Request camera permission on native app launch
+  useEffect(() => {
+    if (!isNative) return;
+
+    let active = true;
+
+    const requestOnLaunch = async () => {
+      try {
+        const permission = await CapCamera.requestPermissions({ permissions: ['camera'] });
+        if (!active) return;
+        if (permission.camera !== 'granted' && permission.camera !== 'limited') {
+          setCameraPermissionDenied(true);
+        } else {
+          setCameraPermissionDenied(false);
+        }
+      } catch (err) {
+        console.warn('Camera permission request on launch failed:', err);
+        if (active) setCameraPermissionDenied(true);
+      }
+    };
+
+    void requestOnLaunch();
+
+    return () => {
+      active = false;
+    };
+  }, [isNative]);
+
   // Helper: Format Dates consistently e.g., "May 31, 2026 · 10:42 AM"
   const getFormattedDate = (): string => {
     const date = new Date();
@@ -165,30 +196,47 @@ export default function App() {
   // Native live camera preview lifecycle
   useEffect(() => {
     let mounted = true;
-    const showCamera = isNative && activeScreen === 'camera';
+    const showCamera = isNative && activeScreen === 'camera' && !modelError;
     document.body.classList.toggle('native-camera-active', showCamera);
 
+    const waitForCameraPreviewElement = async (): Promise<HTMLElement | null> => {
+      for (let attempt = 0; attempt < 20; attempt++) {
+        const el = document.getElementById('camera-preview');
+        if (el) return el;
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => resolve());
+        });
+      }
+      return null;
+    };
+
     const startPreview = async () => {
-      await new Promise<void>((resolve) => {
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-      });
+      const previewEl = await waitForCameraPreviewElement();
+      if (!previewEl) {
+        console.error('CameraPreview: #camera-preview element not found in DOM');
+        return;
+      }
 
-      const viewfinder = viewfinderRef.current;
-      const rect = viewfinder?.getBoundingClientRect();
-      const width = Math.max(1, Math.round(rect?.width ?? window.innerWidth));
-      const height = Math.max(1, Math.round(rect?.height ?? window.innerHeight));
-      const x = Math.round(rect?.left ?? 0);
-      const y = Math.round(rect?.top ?? 0);
+      const permission = await CapCamera.requestPermissions({ permissions: ['camera'] });
+      if (permission.camera !== 'granted' && permission.camera !== 'limited') {
+        console.warn('CameraPreview: camera permission not granted', permission.camera);
+        if (mounted) setCameraPermissionDenied(true);
+        return;
+      }
 
+      if (mounted) setCameraPermissionDenied(false);
+
+      console.log('CameraPreview.start() calling...');
       await CameraPreview.start({
         position: 'rear',
         parent: 'camera-preview',
+        className: 'camera-preview',
         toBack: true,
-        width,
-        height,
-        x,
-        y,
+        width: window.screen.width,
+        height: window.screen.height,
+        rotateWhenOrientationChanged: true,
       });
+      console.log('CameraPreview.start() success');
 
       if (mounted) setCameraDirection('rear');
     };
@@ -198,7 +246,7 @@ export default function App() {
         try {
           await startPreview();
         } catch (e) {
-          console.warn('CameraPreview start error:', e);
+          console.error('CameraPreview.start() failed', e);
           if (mounted) triggerToast('Camera preview unavailable', 'warning');
         }
       } else if (isNative) {
@@ -210,7 +258,7 @@ export default function App() {
       }
     };
 
-    manageCamera();
+    void manageCamera();
 
     return () => {
       mounted = false;
@@ -219,7 +267,7 @@ export default function App() {
         CameraPreview.stop().catch(() => undefined);
       }
     };
-  }, [activeScreen, isNative]);
+  }, [activeScreen, isNative, modelError, cameraRetryToken]);
 
   // Preprocesses and classifies captured Base64 image
   const processAndClassify = async (base64Data: string) => {
@@ -262,7 +310,22 @@ export default function App() {
     }
   };
 
-  // Action: CAPTURE PHOTO
+  const handleRetryCameraPermission = async () => {
+    setCameraPermissionDenied(false);
+    try {
+      const permission = await CapCamera.requestPermissions({ permissions: ['camera'] });
+      if (permission.camera !== 'granted' && permission.camera !== 'limited') {
+        setCameraPermissionDenied(true);
+        return;
+      }
+      setCameraRetryToken((t) => t + 1);
+    } catch (err) {
+      console.warn('Camera permission retry failed:', err);
+      setCameraPermissionDenied(true);
+    }
+  };
+
+  // Action: CAPTURE PHOTO — native uses CameraPreview.capture only
   const handleCapturePhoto = async () => {
     if (modelLoading) {
       triggerToast('Model is still loading. Please wait...', 'info');
@@ -273,32 +336,35 @@ export default function App() {
       return;
     }
 
+    if (!isNative) {
+      browserFileInputRef.current?.click();
+      return;
+    }
+
+    if (cameraPermissionDenied) {
+      triggerToast('Camera permission is required to capture.', 'warning');
+      return;
+    }
+
     try {
-      setCameraPermissionDenied(false);
       setCameraUnavailable(false);
 
-      let capturedBase64 = '';
-      
-      if (isNative) {
-        const result = await CameraPreview.capture({ quality: 90 });
-        capturedBase64 = `data:image/jpeg;base64,${result.value}`;
-      } else {
-        fileInputRef.current?.click();
-        return;
-      }
-      
-      await processAndClassify(capturedBase64);
-    } catch (err: any) {
-      console.warn('Camera capture errored:', err);
-      
-      const errMsg = err?.message || '';
+      const result = await CameraPreview.capture({ quality: 90 });
+      const base64 = result.value.startsWith('data:')
+        ? result.value
+        : `data:image/jpeg;base64,${result.value}`;
+
+      await processAndClassify(base64);
+    } catch (err: unknown) {
+      console.error('CameraPreview.capture failed', err);
+
+      const errMsg = err instanceof Error ? err.message : String(err);
       if (errMsg.toLowerCase().includes('permission') || errMsg.toLowerCase().includes('denied')) {
         setCameraPermissionDenied(true);
       } else if (errMsg.toLowerCase().includes('unavailable') || errMsg.toLowerCase().includes('no camera')) {
         setCameraUnavailable(true);
       } else {
-        // Safe automatic browser fallback
-        fileInputRef.current?.click();
+        triggerToast('Could not capture from the camera. Please try again.', 'error');
       }
     }
   };
@@ -319,7 +385,7 @@ export default function App() {
   // Action: Pick Photo from Gallery (native) or file picker (browser)
   const handleGalleryPick = async () => {
     if (!isNative) {
-      fileInputRef.current?.click();
+      browserFileInputRef.current?.click();
       return;
     }
 
@@ -431,6 +497,7 @@ export default function App() {
     <div
       className={`${isNative ? 'fixed inset-0 h-[100dvh] w-full' : 'min-h-screen'} ${isHomeNative ? 'bg-transparent' : 'bg-[#090D1A]'} flex flex-col items-stretch justify-stretch font-sans text-[#F8FAFC] antialiased ${isNative ? 'p-0' : 'p-0 sm:p-4 items-center justify-center'} selection:bg-blue-600 selection:text-white`}
       id="facescan-app-container"
+      style={isHomeNative ? transparentNative : shellBackground(false)}
     >
       
       {/* 1. Global Multi-Alert Toaster */}
@@ -471,7 +538,15 @@ export default function App() {
       <div 
         className={`w-full flex-1 ${isNative ? 'h-full max-w-none rounded-none border-0 shadow-none' : 'sm:max-w-[385px] sm:h-[812px] sm:border-[8px] sm:border-slate-800 sm:rounded-[40px] shadow-2xl'} ${isHomeNative ? 'bg-transparent' : 'bg-[#0F172A]'} relative overflow-hidden flex flex-col justify-between`}
         id="facescan-mobile-chassis"
-        style={isNative ? { paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' } : undefined}
+        style={{
+          ...(isHomeNative ? transparentNative : shellBackground(false)),
+          ...(isNative
+            ? {
+                paddingTop: 'env(safe-area-inset-top)',
+                paddingBottom: 'env(safe-area-inset-bottom)',
+              }
+            : {}),
+        }}
       >
         
         {/* Device status bar */}
@@ -517,7 +592,11 @@ export default function App() {
         </header>
 
         {/* 4. MAIN WORKSPACE / ROUTER VIEWS */}
-        <main className={`flex-1 relative overflow-y-auto flex flex-col justify-between ${isHomeNative ? 'bg-transparent' : ''}`} id="facescan-main-content">
+        <main
+          className={`flex-1 relative overflow-y-auto flex flex-col justify-between ${isHomeNative ? 'bg-transparent' : ''}`}
+          id="facescan-main-content"
+          style={isHomeNative ? transparentNative : undefined}
+        >
           
           <AnimatePresence mode="wait">
             
@@ -530,9 +609,20 @@ export default function App() {
                 exit={{ opacity: 0 }}
                 className="flex-1 flex flex-col justify-between p-5"
                 id="camera-view-container"
+                style={isNative ? transparentNative : undefined}
               >
+                {/* Native preview mount — must exist before CameraPreview.start() */}
+                {isNative && !modelError && (
+                  <div
+                    id="camera-preview"
+                    className="camera-preview fixed inset-0 z-0 pointer-events-none"
+                    style={transparentNative}
+                    aria-hidden="true"
+                  />
+                )}
+
                 {/* Error/Model alerts or default camera instructions */}
-                <div className="flex-1 flex flex-col justify-center items-center gap-6">
+                <div className="flex-1 flex flex-col justify-center items-center gap-6 relative z-10">
                   
                   {/* Model failure state */}
                   {modelError ? (
@@ -550,24 +640,6 @@ export default function App() {
                         Retry Load
                       </button>
                     </div>
-                  ) : cameraPermissionDenied ? (
-                    // Camera permission failure state
-                    <div className="bg-amber-950/40 border border-amber-900 rounded-2xl p-6 text-center max-w-[310px]" id="camera-denied-state">
-                      <Settings className="w-12 h-12 text-[#F59E0B] mx-auto mb-3" />
-                      <h3 className="text-base font-bold text-[#F8FAFC] mb-1">Camera Access Required</h3>
-                      <p className="text-xs text-[#94A3B8] mb-4">
-                        Camera access is required. Please enable it in settings.
-                      </p>
-                      <button
-                        onClick={() => {
-                          setCameraPermissionDenied(false);
-                          triggerToast('Settings panel simulated. Camera permission updated to Granted!', 'success');
-                        }}
-                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs rounded-xl mx-auto active:scale-95 transition"
-                      >
-                        Open Settings
-                      </button>
-                    </div>
                   ) : cameraUnavailable ? (
                     // Camera hardware missing error state
                     <div className="bg-slate-900/80 border border-slate-700 rounded-2xl p-6 text-center max-w-[310px]" id="camera-unavailable-state">
@@ -578,7 +650,7 @@ export default function App() {
                       </p>
                       <button
                         onClick={() => {
-                          fileInputRef.current?.click();
+                          browserFileInputRef.current?.click();
                         }}
                         className="px-4 py-2 bg-[#1E293B] border border-slate-700 text-[#F8FAFC] font-semibold text-xs rounded-xl mx-auto transition active:scale-95"
                       >
@@ -586,24 +658,44 @@ export default function App() {
                       </button>
                     </div>
                   ) : (
-                    // Default Scanner face placement guide
+                    <>
+                    {cameraPermissionDenied && (
+                      <div
+                        className="absolute inset-0 z-30 flex items-center justify-center px-5"
+                        id="camera-denied-state"
+                      >
+                        <div className="bg-amber-950/90 border border-amber-900 rounded-2xl p-6 text-center max-w-[310px]">
+                          <Settings className="w-12 h-12 text-[#F59E0B] mx-auto mb-3" />
+                          <p className="text-sm text-[#F8FAFC] mb-4 leading-relaxed">
+                            Camera permission is required. Please enable it in your device settings.
+                          </p>
+                          <div className="flex flex-col gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void openAppSettings()}
+                              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs rounded-xl active:scale-95 transition w-full"
+                            >
+                              Open Settings
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleRetryCameraPermission()}
+                              className="px-4 py-2 bg-[#1E293B] border border-slate-700 text-[#F8FAFC] font-semibold text-xs rounded-xl active:scale-95 transition w-full"
+                            >
+                              Try Again
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
                     <div className="flex flex-col items-center justify-center">
-                      
-                      {/* Interactive visual viewfinder with dynamic scan animation overlay */}
                       <div
                         ref={viewfinderRef}
-                        className={`relative w-72 h-72 rounded-[40px] border-4 ${isNative ? 'border-blue-500/40 bg-transparent shadow-none' : 'border-slate-800 bg-[#1E293B]/20 shadow-inner'} overflow-hidden flex items-center justify-center group`}
+                        className={`relative w-72 h-72 rounded-[40px] border-4 ${isNative ? 'border-blue-500/40 shadow-none' : 'border-slate-800 bg-[#1E293B]/20 shadow-inner'} overflow-hidden flex items-center justify-center group`}
                         id="face-scanner-viewfinder"
+                        style={isNative ? transparentNative : undefined}
                       >
-                        {/* Live camera layer (native only, behind scan overlay) */}
-                        {isNative && (
-                          <div
-                            id="camera-preview"
-                            className="absolute inset-0 z-0 pointer-events-none bg-transparent"
-                            aria-hidden="true"
-                          />
-                        )}
-                        
                         {/* Cool corner brackets */}
                         <div className="absolute top-5 left-5 w-8 h-8 border-t-4 border-l-4 border-blue-500 rounded-tl-lg z-20 pointer-events-none"></div>
                         <div className="absolute top-5 right-5 w-8 h-8 border-t-4 border-r-4 border-blue-500 rounded-tr-lg z-20 pointer-events-none"></div>
@@ -641,6 +733,7 @@ export default function App() {
                         Position your face inside the frame and tap capture
                       </p>
                     </div>
+                    </>
                   )}
 
                 </div>
@@ -717,7 +810,7 @@ export default function App() {
                   <input
                     type="file"
                     id="upload-selfie-file"
-                    ref={fileInputRef}
+                    ref={browserFileInputRef}
                     onChange={handleFileUpload}
                     accept="image/*"
                     className="hidden"
@@ -726,7 +819,7 @@ export default function App() {
                   {/* Main capture trigger (Center) */}
                   <button
                     onClick={handleCapturePhoto}
-                    disabled={modelLoading || modelError}
+                    disabled={modelLoading || modelError || (isNative && cameraPermissionDenied)}
                     className={`w-20 h-20 rounded-full p-1.5 border-4 transition-all duration-300 flex items-center justify-center shadow-xl active:scale-95 ${
                       modelLoading || modelError
                         ? 'border-slate-800 bg-[#1E293B]/20 cursor-not-allowed opacity-50'

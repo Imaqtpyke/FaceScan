@@ -7,5 +7,4 @@ coverage/
 .env
 .env.local
 
-# Remove this line after running npx cap add android if you want to track the native project
-android/
+# Native Android project is tracked for CAMERA permissions and transparent WebView (camera-preview)
