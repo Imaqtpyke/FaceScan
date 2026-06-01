@@ -7,4 +7,4 @@ coverage/
 .env
 .env.local
 
-# Native Android project is tracked for CAMERA permissions and transparent WebView (camera-preview)
+# Native Android project is tracked for CAMERA permissions and WebView getUserMedia

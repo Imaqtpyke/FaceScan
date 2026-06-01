@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Camera,
@@ -20,16 +20,19 @@ import {
 } from 'lucide-react';
 
 import { Capacitor } from '@capacitor/core';
-import { CameraPreview } from '@capacitor-community/camera-preview';
 import { Preferences } from '@capacitor/preferences';
 import { Camera as CapCamera, CameraResultType, CameraSource } from '@capacitor/camera';
 
 import { ScanResult, ScreenState, CameraDirectionType } from './types';
 import { preprocessImage } from './services/camera';
+import {
+  captureVideoFrame,
+  startCameraStream,
+  stopMediaStream,
+} from './services/cameraStream';
 import { getScanHistory, saveScanResult, clearScanHistory, deleteScanResult } from './services/storage';
 import { classifyCanvas, loadTeachableMachineModel } from './services/faceModel';
 import { openAppSettings } from './utils/openAppSettings';
-import { shellBackground, transparentNative } from './utils/nativeStyles';
 
 export default function App() {
   // Screens & Navigation
@@ -71,10 +74,12 @@ export default function App() {
   // Spin rotation angle tracker for flip button
   const [spinDeg, setSpinDeg] = useState(0);
 
-  // Browser-only file picker (never used for native capture)
   const browserFileInputRef = useRef<HTMLInputElement>(null);
   const viewfinderRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
   const [cameraRetryToken, setCameraRetryToken] = useState(0);
+  const [cameraStreamReady, setCameraStreamReady] = useState(false);
 
   // Toast notifier helper
   const triggerToast = (message: string, type: 'success' | 'warning' | 'error' | 'info' = 'info') => {
@@ -136,7 +141,6 @@ export default function App() {
     const requestOnLaunch = async () => {
       try {
         const permission = await CapCamera.requestPermissions({ permissions: ['camera'] });
-        console.log('camera permission:', JSON.stringify(permission));
         if (!active) return;
         if (permission.camera !== 'granted' && permission.camera !== 'limited') {
           setCameraPermissionDenied(true);
@@ -180,86 +184,93 @@ export default function App() {
     }
   }, [activeScreen, tipsDismissed]);
 
-  // Native live camera preview lifecycle
+  const stopCameraStream = useCallback(() => {
+    stopMediaStream(streamRef.current);
+    streamRef.current = null;
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setCameraStreamReady(false);
+  }, []);
+
+  const startCameraStreamForDirection = useCallback(
+    async (direction: CameraDirectionType) => {
+      const video = videoRef.current;
+      if (!video || !navigator.mediaDevices?.getUserMedia) {
+        setCameraUnavailable(true);
+        return;
+      }
+
+      try {
+        if (isNative) {
+          const permission = await CapCamera.requestPermissions({ permissions: ['camera'] });
+          if (permission.camera !== 'granted' && permission.camera !== 'limited') {
+            setCameraPermissionDenied(true);
+            return;
+          }
+          setCameraPermissionDenied(false);
+        }
+
+        stopCameraStream();
+
+        const stream = await startCameraStream(direction, video);
+        streamRef.current = stream;
+        setCameraUnavailable(false);
+        setCameraStreamReady(true);
+      } catch (err) {
+        console.error('getUserMedia failed:', err);
+        const errMsg = err instanceof Error ? err.message : String(err);
+        if (
+          errMsg.toLowerCase().includes('permission') ||
+          errMsg.toLowerCase().includes('denied') ||
+          errMsg.toLowerCase().includes('notallowed')
+        ) {
+          setCameraPermissionDenied(true);
+        } else {
+          setCameraUnavailable(true);
+          triggerToast('Camera preview unavailable', 'warning');
+        }
+        setCameraStreamReady(false);
+      }
+    },
+    [isNative, stopCameraStream]
+  );
+
+  // Live camera stream via getUserMedia (native + browser)
   useEffect(() => {
-    let mounted = true;
-    const showCamera = isNative && activeScreen === 'camera' && !modelError;
-    document.body.classList.toggle('native-camera-active', showCamera);
+    const shouldRun =
+      activeScreen === 'camera' && !modelError && !cameraPermissionDenied;
 
-    const waitForCameraPreviewElement = async (): Promise<HTMLElement | null> => {
-      for (let attempt = 0; attempt < 20; attempt++) {
-        const el = document.getElementById('camera-preview');
-        if (el) return el;
-        await new Promise<void>((resolve) => {
-          requestAnimationFrame(() => resolve());
-        });
-      }
-      return null;
-    };
+    if (!shouldRun) {
+      stopCameraStream();
+      return;
+    }
 
-    const startPreview = async () => {
-      const previewEl = await waitForCameraPreviewElement();
-      if (!previewEl) {
-        console.error('CameraPreview: #camera-preview element not found in DOM');
-        return;
-      }
+    let cancelled = false;
 
-      const permission = await CapCamera.requestPermissions({ permissions: ['camera'] });
-      console.log('camera permission:', JSON.stringify(permission));
-      if (permission.camera !== 'granted' && permission.camera !== 'limited') {
-        console.warn('CameraPreview: camera permission not granted', permission.camera);
-        if (mounted) setCameraPermissionDenied(true);
-        return;
-      }
-
-      if (mounted) setCameraPermissionDenied(false);
-
-      console.log(
-        'camera-preview div exists:',
-        !!document.getElementById('camera-preview')
-      );
-      console.log('CameraPreview.start() called');
-      await CameraPreview.start({
-        position: 'rear',
-        parent: 'camera-preview',
-        className: 'camera-preview',
-        toBack: true,
-        width: window.screen.width,
-        height: window.screen.height,
-        rotateWhenOrientationChanged: true,
+    const run = async () => {
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
       });
-      console.log('CameraPreview.start() success');
-
-      if (mounted) setCameraDirection('rear');
+      if (cancelled) return;
+      await startCameraStreamForDirection(cameraDirection);
     };
 
-    const manageCamera = async () => {
-      if (showCamera) {
-        try {
-          await startPreview();
-        } catch (e) {
-          console.error('CameraPreview.start() failed:', e);
-          if (mounted) triggerToast('Camera preview unavailable', 'warning');
-        }
-      } else if (isNative) {
-        try {
-          await CameraPreview.stop();
-        } catch (e) {
-          console.warn('CameraPreview stop error:', e);
-        }
-      }
-    };
-
-    void manageCamera();
+    void run();
 
     return () => {
-      mounted = false;
-      document.body.classList.remove('native-camera-active');
-      if (isNative) {
-        CameraPreview.stop().catch(() => undefined);
-      }
+      cancelled = true;
+      stopCameraStream();
     };
-  }, [activeScreen, isNative, modelError, cameraRetryToken]);
+  }, [
+    activeScreen,
+    modelError,
+    cameraPermissionDenied,
+    cameraDirection,
+    cameraRetryToken,
+    startCameraStreamForDirection,
+    stopCameraStream,
+  ]);
 
   // Preprocesses and classifies captured Base64 image
   const processAndClassify = async (base64Data: string) => {
@@ -317,7 +328,7 @@ export default function App() {
     }
   };
 
-  // Action: CAPTURE PHOTO — native uses CameraPreview.capture only
+  // Action: CAPTURE PHOTO — canvas snapshot from live <video> feed
   const handleCapturePhoto = async () => {
     if (modelLoading) {
       triggerToast('Model is still loading. Please wait...', 'info');
@@ -328,50 +339,36 @@ export default function App() {
       return;
     }
 
-    if (!isNative) {
-      browserFileInputRef.current?.click();
-      return;
-    }
-
     if (cameraPermissionDenied) {
       triggerToast('Camera permission is required to capture.', 'warning');
       return;
     }
 
-    try {
-      setCameraUnavailable(false);
-
-      const result = await CameraPreview.capture({ quality: 90 });
-      const base64 = result.value.startsWith('data:')
-        ? result.value
-        : `data:image/jpeg;base64,${result.value}`;
-
-      await processAndClassify(base64);
-    } catch (err: unknown) {
-      console.error('CameraPreview.capture failed', err);
-
-      const errMsg = err instanceof Error ? err.message : String(err);
-      if (errMsg.toLowerCase().includes('permission') || errMsg.toLowerCase().includes('denied')) {
-        setCameraPermissionDenied(true);
-      } else if (errMsg.toLowerCase().includes('unavailable') || errMsg.toLowerCase().includes('no camera')) {
-        setCameraUnavailable(true);
-      } else {
+    const video = videoRef.current;
+    if (video?.srcObject && video.videoWidth > 0 && cameraStreamReady) {
+      try {
+        const base64 = captureVideoFrame(video);
+        stopCameraStream();
+        await processAndClassify(base64);
+      } catch (err: unknown) {
+        console.error('Video frame capture failed:', err);
         triggerToast('Could not capture from the camera. Please try again.', 'error');
       }
+      return;
     }
+
+    if (!isNative) {
+      browserFileInputRef.current?.click();
+      return;
+    }
+
+    triggerToast('Camera is not ready. Please wait or try again.', 'warning');
   };
 
-  // Flip Camera Action
-  const toggleFlipCamera = async () => {
+  // Flip camera — restart getUserMedia with new facingMode
+  const toggleFlipCamera = () => {
     setSpinDeg((prev) => prev + 180);
     setCameraDirection((prev) => (prev === 'front' ? 'rear' : 'front'));
-    if (isNative) {
-      try {
-        await CameraPreview.flip();
-      } catch (e) {
-        console.warn('Error flipping camera', e);
-      }
-    }
   };
 
   // Action: Pick Photo from Gallery (native) or file picker (browser)
@@ -483,13 +480,10 @@ export default function App() {
 
 
 
-  const isHomeNative = isNative && activeScreen === 'camera';
-
   return (
     <div
-      className={`${isNative ? 'fixed inset-0 h-[100dvh] w-full' : 'min-h-screen'} ${isHomeNative ? 'bg-transparent' : 'bg-[#090D1A]'} flex flex-col items-stretch justify-stretch font-sans text-[#F8FAFC] antialiased ${isNative ? 'p-0' : 'p-0 sm:p-4 items-center justify-center'} selection:bg-blue-600 selection:text-white`}
+      className={`${isNative ? 'fixed inset-0 h-[100dvh] w-full' : 'min-h-screen'} bg-[#090D1A] flex flex-col items-stretch justify-stretch font-sans text-[#F8FAFC] antialiased ${isNative ? 'p-0' : 'p-0 sm:p-4 items-center justify-center'} selection:bg-blue-600 selection:text-white`}
       id="facescan-app-container"
-      style={isHomeNative ? transparentNative : shellBackground(false)}
     >
       
       {/* 1. Global Multi-Alert Toaster */}
@@ -528,20 +522,19 @@ export default function App() {
 
       {/* 2. App shell — full screen on device, phone frame in browser */}
       <div 
-        className={`w-full flex-1 ${isNative ? 'h-full max-w-none rounded-none border-0 shadow-none' : 'sm:max-w-[385px] sm:h-[812px] sm:border-[8px] sm:border-slate-800 sm:rounded-[40px] shadow-2xl'} ${isHomeNative ? 'bg-transparent' : 'bg-[#0F172A]'} relative overflow-hidden flex flex-col justify-between`}
+        className={`w-full flex-1 bg-[#0F172A] ${isNative ? 'h-full max-w-none rounded-none border-0 shadow-none' : 'sm:max-w-[385px] sm:h-[812px] sm:border-[8px] sm:border-slate-800 sm:rounded-[40px] shadow-2xl'} relative overflow-hidden flex flex-col justify-between`}
         id="facescan-mobile-chassis"
-        style={{
-          ...(isHomeNative ? transparentNative : shellBackground(false)),
-          ...(isNative
+        style={
+          isNative
             ? {
                 paddingTop: 'env(safe-area-inset-top)',
                 paddingBottom: 'env(safe-area-inset-bottom)',
               }
-            : {}),
-        }}
+            : undefined
+        }
       >
         {/* 3. APP TOP NAV ACTION BAR */}
-        <header className={`px-5 py-4 flex items-center justify-between ${isHomeNative ? 'border-transparent' : 'border-b border-slate-800/70'}`} id="facescan-app-header">
+        <header className="px-5 py-4 flex items-center justify-between border-b border-slate-800/70" id="facescan-app-header">
           <div className="flex items-center gap-2">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-ping"></div>
             <h1 className="text-md font-extrabold tracking-widest text-[#F8FAFC]">
@@ -568,9 +561,8 @@ export default function App() {
 
         {/* 4. MAIN WORKSPACE / ROUTER VIEWS */}
         <main
-          className={`flex-1 relative overflow-y-auto flex flex-col justify-between ${isHomeNative ? 'bg-transparent' : ''}`}
+          className="flex-1 relative overflow-y-auto flex flex-col justify-between bg-[#0F172A]"
           id="facescan-main-content"
-          style={isHomeNative ? transparentNative : undefined}
         >
           
           <AnimatePresence mode="wait">
@@ -584,18 +576,7 @@ export default function App() {
                 exit={{ opacity: 0 }}
                 className="flex-1 flex flex-col justify-between p-5"
                 id="camera-view-container"
-                style={isNative ? transparentNative : undefined}
               >
-                {/* Native preview mount — must exist before CameraPreview.start() */}
-                {isNative && !modelError && (
-                  <div
-                    id="camera-preview"
-                    className="camera-preview fixed inset-0 z-0 pointer-events-none"
-                    style={transparentNative}
-                    aria-hidden="true"
-                  />
-                )}
-
                 {/* Error/Model alerts or default camera instructions */}
                 <div className="flex-1 flex flex-col justify-center items-center gap-6 relative z-10">
                   
@@ -667,10 +648,18 @@ export default function App() {
                     <div className="flex flex-col items-center justify-center">
                       <div
                         ref={viewfinderRef}
-                        className={`relative w-72 h-72 rounded-[40px] border-4 ${isNative ? 'border-blue-500/40 shadow-none' : 'border-slate-800 bg-[#1E293B]/20 shadow-inner'} overflow-hidden flex items-center justify-center group`}
+                        className={`relative w-72 h-72 rounded-[40px] border-4 ${cameraStreamReady ? 'border-blue-500/60' : 'border-slate-800'} bg-[#1E293B]/20 shadow-inner overflow-hidden flex items-center justify-center group`}
                         id="face-scanner-viewfinder"
-                        style={isNative ? transparentNative : undefined}
                       >
+                        <video
+                          ref={videoRef}
+                          autoPlay
+                          playsInline
+                          muted
+                          className={`absolute inset-0 z-10 w-full h-full object-cover ${cameraStreamReady ? 'opacity-100' : 'opacity-0'}`}
+                          style={{ borderRadius: '12px' }}
+                        />
+
                         {/* Cool corner brackets */}
                         <div className="absolute top-5 left-5 w-8 h-8 border-t-4 border-l-4 border-blue-500 rounded-tl-lg z-20 pointer-events-none"></div>
                         <div className="absolute top-5 right-5 w-8 h-8 border-t-4 border-r-4 border-blue-500 rounded-tr-lg z-20 pointer-events-none"></div>
@@ -684,9 +673,9 @@ export default function App() {
                           className="absolute left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-blue-500 to-transparent z-20 shadow-[0_0_8px_rgba(59,130,246,0.8)]"
                         ></motion.div>
 
-                        {/* Static face silhouette inside bracket guide (only when NOT native) */}
-                        {!isNative && (
-                          <div className="opacity-15 text-slate-400 group-hover:scale-105 group-hover:opacity-20 transition duration-500">
+                        {/* Placeholder when live stream is not active (browser / loading) */}
+                        {!cameraStreamReady && (
+                          <div className="opacity-15 text-slate-400 group-hover:scale-105 group-hover:opacity-20 transition duration-500 z-0">
                             <User className="w-44 h-44 stroke-[1]" />
                           </div>
                         )}
@@ -794,7 +783,7 @@ export default function App() {
                   {/* Main capture trigger (Center) */}
                   <button
                     onClick={handleCapturePhoto}
-                    disabled={modelLoading || modelError || (isNative && cameraPermissionDenied)}
+                    disabled={modelLoading || modelError || cameraPermissionDenied}
                     className={`w-20 h-20 rounded-full p-1.5 border-4 transition-all duration-300 flex items-center justify-center shadow-xl active:scale-95 ${
                       modelLoading || modelError
                         ? 'border-slate-800 bg-[#1E293B]/20 cursor-not-allowed opacity-50'
@@ -824,7 +813,7 @@ export default function App() {
                 {/* Front / Rear orientation label tag */}
                 <div className="text-center mt-3" id="orientation-indicator">
                   <span className="text-[10px] font-mono text-slate-500 uppercase tracking-widest bg-slate-900/60 px-3 py-1 rounded-full">
-                    Camera Bias: {cameraDirection} direction
+                    Camera Bias: {cameraDirection.toUpperCase()} direction
                   </span>
                 </div>
 

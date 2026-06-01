@@ -5,15 +5,16 @@ const config: CapacitorConfig = {
   appName: 'FaceScan',
   webDir: 'dist',
   server: {
-    androidScheme: 'https'
+    androidScheme: 'https',
   },
   plugins: {
     Camera: {
-      saveToGallery: false
-    }
+      saveToGallery: false,
+    },
   },
   backgroundColor: '#0F172A',
   android: {
+    allowMixedContent: true,
     backgroundColor: '#0F172A',
   },
 };
