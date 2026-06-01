@@ -76,9 +76,6 @@ export default function App() {
   const viewfinderRef = useRef<HTMLDivElement>(null);
   const [cameraRetryToken, setCameraRetryToken] = useState(0);
 
-  // Register real-time UTC Clock on top frame bar for authenticity
-  const [simulatedTime, setSimulatedTime] = useState('');
-
   // Toast notifier helper
   const triggerToast = (message: string, type: 'success' | 'warning' | 'error' | 'info' = 'info') => {
     const id = Math.random().toString(36).substring(7);
@@ -125,19 +122,8 @@ export default function App() {
 
     initializeCoreApp();
 
-    // Setup local simulated clock matching timezone format May 31, 2026
-    const tick = () => {
-      const now = new Date();
-      setSimulatedTime(
-        now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      );
-    };
-    tick();
-    const interval = setInterval(tick, 60000);
-
     return () => {
       active = false;
-      clearInterval(interval);
     };
   }, []);
 
@@ -150,6 +136,7 @@ export default function App() {
     const requestOnLaunch = async () => {
       try {
         const permission = await CapCamera.requestPermissions({ permissions: ['camera'] });
+        console.log('camera permission:', JSON.stringify(permission));
         if (!active) return;
         if (permission.camera !== 'granted' && permission.camera !== 'limited') {
           setCameraPermissionDenied(true);
@@ -218,6 +205,7 @@ export default function App() {
       }
 
       const permission = await CapCamera.requestPermissions({ permissions: ['camera'] });
+      console.log('camera permission:', JSON.stringify(permission));
       if (permission.camera !== 'granted' && permission.camera !== 'limited') {
         console.warn('CameraPreview: camera permission not granted', permission.camera);
         if (mounted) setCameraPermissionDenied(true);
@@ -226,7 +214,11 @@ export default function App() {
 
       if (mounted) setCameraPermissionDenied(false);
 
-      console.log('CameraPreview.start() calling...');
+      console.log(
+        'camera-preview div exists:',
+        !!document.getElementById('camera-preview')
+      );
+      console.log('CameraPreview.start() called');
       await CameraPreview.start({
         position: 'rear',
         parent: 'camera-preview',
@@ -246,7 +238,7 @@ export default function App() {
         try {
           await startPreview();
         } catch (e) {
-          console.error('CameraPreview.start() failed', e);
+          console.error('CameraPreview.start() failed:', e);
           if (mounted) triggerToast('Camera preview unavailable', 'warning');
         }
       } else if (isNative) {
@@ -548,23 +540,6 @@ export default function App() {
             : {}),
         }}
       >
-        
-        {/* Device status bar */}
-        <div className={`px-5 pt-2 pb-2 flex justify-between items-center ${isHomeNative ? 'bg-transparent border-transparent' : 'bg-[#0F172A] border-b border-slate-800/40'} select-none text-xs font-mono text-[#94A3B8]`} id="mobile-notch-header">
-          <div className="flex items-center gap-1 font-semibold text-emerald-500">
-            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
-            <span>OFFLINE LOCAL RECOGNITION</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span>{simulatedTime || '10:42 AM'}</span>
-            <div className="w-5 h-2.5 border border-slate-700 rounded-sm p-[1px] flex gap-[1px]">
-              <div className="w-1 h-full bg-emerald-400 rounded-2xs"></div>
-              <div className="w-1.5 h-full bg-emerald-400 rounded-2xs"></div>
-              <div className="w-1 h-full bg-emerald-400 rounded-2xs"></div>
-            </div>
-          </div>
-        </div>
-
         {/* 3. APP TOP NAV ACTION BAR */}
         <header className={`px-5 py-4 flex items-center justify-between ${isHomeNative ? 'border-transparent' : 'border-b border-slate-800/70'}`} id="facescan-app-header">
           <div className="flex items-center gap-2">
