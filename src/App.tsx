@@ -80,6 +80,8 @@ export default function App() {
   const streamRef = useRef<MediaStream | null>(null);
   const [cameraRetryToken, setCameraRetryToken] = useState(0);
   const [cameraStreamReady, setCameraStreamReady] = useState(false);
+  /** Bumped each time we navigate to the camera screen so stream effect re-runs after results */
+  const [cameraSessionId, setCameraSessionId] = useState(0);
 
   // Toast notifier helper
   const triggerToast = (message: string, type: 'success' | 'warning' | 'error' | 'info' = 'info') => {
@@ -177,12 +179,42 @@ export default function App() {
     return `${month} ${day}, ${year} · ${hours}:${minutes} ${ampm}`;
   };
 
-  // Auto-show tips on home screen unless user opted out (manual toggle still works)
+  const navigateToCameraScreen = useCallback(() => {
+    setCameraSessionId((id) => id + 1);
+    setActiveScreen('camera');
+  }, []);
+
+  // Tips panel: read preference whenever home screen becomes active
   useEffect(() => {
-    if (activeScreen === 'camera' && !tipsDismissed) {
-      setTipsExpanded(true);
-    }
-  }, [activeScreen, tipsDismissed]);
+    if (activeScreen !== 'camera') return;
+
+    let active = true;
+
+    const applyTipsPreference = async () => {
+      try {
+        const { value } = await Preferences.get({ key: 'tips_dismissed' });
+        if (!active) return;
+        const dismissed = value === 'true';
+        setTipsDismissed(dismissed);
+        if (dismissed) {
+          setTipsExpanded(false);
+        } else {
+          setTipsExpanded(true);
+        }
+      } catch (err) {
+        console.warn('Failed to load tips preferences:', err);
+        if (active) {
+          setTipsExpanded(true);
+        }
+      }
+    };
+
+    void applyTipsPreference();
+
+    return () => {
+      active = false;
+    };
+  }, [activeScreen, cameraSessionId]);
 
   const stopCameraStream = useCallback(() => {
     stopMediaStream(streamRef.current);
@@ -211,7 +243,9 @@ export default function App() {
           setCameraPermissionDenied(false);
         }
 
-        stopCameraStream();
+        if (streamRef.current?.active) {
+          stopCameraStream();
+        }
 
         const stream = await startCameraStream(direction, video);
         streamRef.current = stream;
@@ -248,11 +282,25 @@ export default function App() {
 
     let cancelled = false;
 
+    const waitForVideoElement = async (): Promise<boolean> => {
+      for (let attempt = 0; attempt < 40; attempt++) {
+        if (cancelled) return false;
+        if (videoRef.current) return true;
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => resolve());
+        });
+      }
+      return false;
+    };
+
     const run = async () => {
-      await new Promise<void>((resolve) => {
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-      });
-      if (cancelled) return;
+      const hasVideo = await waitForVideoElement();
+      if (cancelled || !hasVideo) return;
+
+      if (streamRef.current?.active) {
+        stopCameraStream();
+      }
+
       await startCameraStreamForDirection(cameraDirection);
     };
 
@@ -264,6 +312,7 @@ export default function App() {
     };
   }, [
     activeScreen,
+    cameraSessionId,
     modelError,
     cameraPermissionDenied,
     cameraDirection,
@@ -395,6 +444,9 @@ export default function App() {
 
   const handleDismissTipsForever = async (checked: boolean) => {
     setTipsDismissed(checked);
+    if (checked) {
+      setTipsExpanded(false);
+    }
     try {
       await Preferences.set({
         key: 'tips_dismissed',
@@ -570,7 +622,7 @@ export default function App() {
             {/* VIEW A: CAMERA HOME VIEW */}
             {activeScreen === 'camera' && (
               <motion.div
-                key="camera-screen"
+                key={`camera-screen-${cameraSessionId}`}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
@@ -657,7 +709,10 @@ export default function App() {
                           playsInline
                           muted
                           className={`absolute inset-0 z-10 w-full h-full object-cover ${cameraStreamReady ? 'opacity-100' : 'opacity-0'}`}
-                          style={{ borderRadius: '12px' }}
+                          style={{
+                            borderRadius: '12px',
+                            transform: cameraDirection === 'front' ? 'scaleX(-1)' : 'scaleX(1)',
+                          }}
                         />
 
                         {/* Cool corner brackets */}
@@ -810,13 +865,6 @@ export default function App() {
                   </button>
                 </div>
 
-                {/* Front / Rear orientation label tag */}
-                <div className="text-center mt-3" id="orientation-indicator">
-                  <span className="text-[10px] font-mono text-slate-500 uppercase tracking-widest bg-slate-900/60 px-3 py-1 rounded-full">
-                    Camera Bias: {cameraDirection.toUpperCase()} direction
-                  </span>
-                </div>
-
               </motion.div>
             )}
 
@@ -943,21 +991,11 @@ export default function App() {
                   
                   {/* Scan again/retake option */}
                   <button
-                    onClick={() => setActiveScreen('camera')}
+                    onClick={navigateToCameraScreen}
                     className="w-full py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm rounded-xl shadow-lg border border-blue-500/10 flex items-center justify-center gap-2 transition active:scale-95 cursor-pointer"
                     id="scan-again-button"
                   >
                     Scan Again
-                  </button>
-
-                  {/* Specifically RETAKE PHOTO option with camera icon */}
-                  <button
-                    onClick={() => setActiveScreen('camera')}
-                    className="w-full py-3.5 bg-[#1E293B] hover:bg-[#28354c] text-[#F8FAFC] border border-slate-800 font-bold text-sm rounded-xl flex items-center justify-center gap-2 transition active:scale-95 cursor-pointer"
-                    id="retake-photo-button"
-                  >
-                    <Camera className="w-4 h-4 text-blue-500" />
-                    Retake Photo
                   </button>
                 </div>
 
