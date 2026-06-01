@@ -11,7 +11,8 @@ const config: CapacitorConfig = {
     Camera: {
       saveToGallery: false
     }
-  }
+  },
+  backgroundColor: '#0F172A'
 };
 
 export default config;

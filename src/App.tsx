@@ -18,8 +18,14 @@ import {
   RefreshCw,
   Image as ImageIcon,
   UserCheck,
-  Lightbulb
+  Lightbulb,
+  Images
 } from 'lucide-react';
+
+import { Capacitor } from '@capacitor/core';
+import { CameraPreview } from '@capacitor-community/camera-preview';
+import { Preferences } from '@capacitor/preferences';
+import { Camera as CapCamera, CameraResultType, CameraSource } from '@capacitor/camera';
 
 import { ScanResult, ScreenState, CameraDirectionType } from './types';
 import { capturePhoto, preprocessImage } from './services/camera';
@@ -30,8 +36,9 @@ export default function App() {
   // Screens & Navigation
   const [activeScreen, setActiveScreen] = useState<ScreenState>('camera');
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [simulatorOpen, setSimulatorOpen] = useState(false);
   const [tipsExpanded, setTipsExpanded] = useState(false);
+  const [tipsDismissed, setTipsDismissed] = useState(false);
+  const isNative = Capacitor.isNativePlatform();
 
   // Model & Core State
   const [modelLoading, setModelLoading] = useState(true);
@@ -104,6 +111,15 @@ export default function App() {
           triggerToast('Unable to load history.', 'error');
         }
       }
+
+      try {
+        const { value } = await Preferences.get({ key: 'tips_dismissed' });
+        if (value === 'true') {
+          if (active) setTipsDismissed(true);
+        }
+      } catch (err) {
+        console.warn('Failed to load tips preferences:', err);
+      }
     }
 
     initializeCoreApp();
@@ -140,6 +156,47 @@ export default function App() {
 
     return `${month} ${day}, ${year} · ${hours}:${minutes} ${ampm}`;
   };
+
+  // Manage CameraPreview Lifecycle
+  useEffect(() => {
+    let mounted = true;
+    
+    const manageCamera = async () => {
+      if (activeScreen === 'camera') {
+        if (!tipsDismissed) {
+          setTipsExpanded(true);
+        }
+        
+        if (isNative) {
+          try {
+            await CameraPreview.start({
+              position: 'rear',
+              parent: 'camera-preview',
+              toBack: true,
+            });
+            if (mounted) setCameraDirection('rear');
+          } catch (e) {
+            console.warn('CameraPreview start error:', e);
+            if (mounted) triggerToast('Camera preview unavailable', 'warning');
+          }
+        }
+      } else {
+        if (isNative) {
+          try {
+            await CameraPreview.stop();
+          } catch (e) {
+            console.warn('CameraPreview stop error:', e);
+          }
+        }
+      }
+    };
+    
+    manageCamera();
+    
+    return () => {
+      mounted = false;
+    };
+  }, [activeScreen, isNative, tipsDismissed]);
 
   // Preprocesses and classifies captured Base64 image
   const processAndClassify = async (base64Data: string) => {
@@ -182,7 +239,7 @@ export default function App() {
     }
   };
 
-  // Action: CAPTURE PHOTO triggers capacitor camera
+  // Action: CAPTURE PHOTO
   const handleCapturePhoto = async () => {
     if (modelLoading) {
       triggerToast('Model is still loading. Please wait...', 'info');
@@ -197,10 +254,20 @@ export default function App() {
       setCameraPermissionDenied(false);
       setCameraUnavailable(false);
 
-      const capturedBase64 = await capturePhoto(cameraDirection);
+      let capturedBase64 = '';
+      
+      if (isNative) {
+        // Native CameraPreview capture
+        const result = await CameraPreview.capture({ quality: 90 });
+        capturedBase64 = `data:image/jpeg;base64,${result.value}`;
+      } else {
+        // Browser standard web camera capture fallback
+        capturedBase64 = await capturePhoto(cameraDirection);
+      }
+      
       await processAndClassify(capturedBase64);
     } catch (err: any) {
-      console.warn('Native Capacitor Camera call skipped or errored:', err);
+      console.warn('Camera capture errored:', err);
       
       const errMsg = err?.message || '';
       if (errMsg.toLowerCase().includes('permission') || errMsg.toLowerCase().includes('denied')) {
@@ -208,38 +275,40 @@ export default function App() {
       } else if (errMsg.toLowerCase().includes('unavailable') || errMsg.toLowerCase().includes('no camera')) {
         setCameraUnavailable(true);
       } else {
-        // Safe automatic sandbox fallback: Open simulation view drawer so user isn't stuck holding errors!
-        triggerToast('Native camera integration skipped in sandbox preview mode.', 'info');
-        setSimulatorOpen(true);
+        // Safe automatic browser fallback
+        fileInputRef.current?.click();
       }
     }
   };
 
   // Flip Camera Action
-  const toggleFlipCamera = () => {
+  const toggleFlipCamera = async () => {
     setSpinDeg((prev) => prev + 180);
     setCameraDirection((prev) => (prev === 'front' ? 'rear' : 'front'));
+    if (isNative) {
+      try {
+        await CameraPreview.flip();
+      } catch (e) {
+        console.warn('Error flipping camera', e);
+      }
+    }
   };
 
-  // Trigger simulated profiles manually on-screen
-  const executeSimulation = (presetType: 'john' | 'jane' | 'unknown') => {
-    setIsAnalyzing(true);
-    setSimulatorOpen(false);
-
-    setTimeout(async () => {
-      try {
-        const canvas = document.createElement('canvas');
-        canvas.width = 224;
-        canvas.height = 224;
-        drawMockProfileToCanvas(presetType, canvas);
-
-        const base64 = canvas.toDataURL('image/jpeg', 0.9);
-        await processAndClassify(base64);
-      } catch (err) {
-        triggerToast('Simulator preprocessing failure.', 'error');
-        setIsAnalyzing(false);
+  // Action: Pick Photo from Gallery
+  const handleGalleryPick = async () => {
+    try {
+      const image = await CapCamera.getPhoto({
+        quality: 90,
+        allowEditing: false,
+        resultType: CameraResultType.DataUrl,
+        source: CameraSource.Photos
+      });
+      if (image.dataUrl) {
+        await processAndClassify(image.dataUrl);
       }
-    }, 1200); // realistic scan timing
+    } catch (err: any) {
+      console.warn('Gallery pick cancelled or failed', err);
+    }
   };
 
   // Live File Upload Handler (Fallback for browser testing)
@@ -309,102 +378,19 @@ export default function App() {
     }
   };
 
-  // Preset Draw Canvas vector avatars helper
-  const drawMockProfileToCanvas = (type: 'john' | 'jane' | 'unknown', canvas: HTMLCanvasElement) => {
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    const w = canvas.width;
-    const h = canvas.height;
+  // Removed preset canvas drawing mock function
 
-    // Gradient Backgrounds
-    const grad = ctx.createLinearGradient(0, 0, w, h);
-    if (type === 'john') {
-      grad.addColorStop(0, '#1E3A8A'); // deep blue
-      grad.addColorStop(1, '#3B82F6'); // primary accent blue
-    } else if (type === 'jane') {
-      grad.addColorStop(0, '#78350F'); // amber
-      grad.addColorStop(1, '#F59E0B'); // warning amber
-    } else {
-      grad.addColorStop(0, '#1E293B'); // Slate
-      grad.addColorStop(1, '#475569');
-    }
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, w, h);
 
-    // Grid effect
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
-    ctx.lineWidth = 1;
-    for (let x = 0; x < w; x += 16) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, h);
-      ctx.stroke();
-    }
-    for (let y = 0; y < h; y += 16) {
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(w, y);
-      ctx.stroke();
-    }
 
-    // Outer scanning circular radar lines
-    ctx.strokeStyle = type === 'john' ? '#10B981' : type === 'jane' ? '#F59E0B' : '#F43F5E';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(w / 2, h / 2, 85, 0, Math.PI * 2);
-    ctx.stroke();
-
-    // User Avatar drawing
-    ctx.fillStyle = '#FFFFFF';
-    ctx.shadowColor = 'rgba(0,0,0,0.4)';
-    ctx.shadowBlur = 10;
-
-    if (type !== 'unknown') {
-      const cx = w / 2;
-      const cy = h / 2 - 12;
-
-      // Circle representing Head
-      ctx.beginPath();
-      ctx.arc(cx, cy, 32, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Rounded neck & shoulders
-      ctx.beginPath();
-      ctx.ellipse(cx, cy + 68, 52, 38, 0, 0, Math.PI, true);
-      ctx.fill();
-
-      // Stylish Glasses
-      ctx.fillStyle = type === 'john' ? '#10B981' : '#F59E0B';
-      ctx.shadowBlur = 0;
-      ctx.beginPath();
-      ctx.arc(cx - 14, cy - 4, 7, 0, Math.PI * 2);
-      ctx.arc(cx + 14, cy - 4, 7, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.rect(cx - 14, cy - 6, 28, 3);
-      ctx.fill();
-
-      // Badge ID Banner
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.6)';
-      ctx.beginPath();
-      ctx.roundRect(cx - 45, cy + 44, 90, 18, 5);
-      ctx.fill();
-
-      ctx.fillStyle = '#FFFFFF';
-      ctx.font = 'bold 8px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(type === 'john' ? 'STUDENT #00123' : 'STUDENT #00567', cx, cy + 56);
-    } else {
-      // Question Mark indicator
-      ctx.fillStyle = '#F8FAFC';
-      ctx.font = 'bold 54px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText('?', w / 2, h / 2 + 18);
-    }
-  };
+  const isHomeNative = isNative && activeScreen === 'camera';
 
   return (
-    <div className="min-h-screen bg-[#090D1A] flex flex-col items-center justify-center font-sans text-[#F8FAFC] antialiased p-0 sm:p-4 selection:bg-blue-600 selection:text-white" id="facescan-app-container">
+    <div className={`min-h-screen ${isHomeNative ? 'bg-transparent' : 'bg-[#090D1A]'} flex flex-col items-center justify-center font-sans text-[#F8FAFC] antialiased p-0 sm:p-4 selection:bg-blue-600 selection:text-white`} id="facescan-app-container">
+      
+      {/* Native Camera Preview Wrapper Element */}
+      {isHomeNative && (
+        <div id="camera-preview" className="fixed inset-0 z-[-1] pointer-events-none" />
+      )}
       
       {/* 1. Global Multi-Alert Toaster */}
       <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 flex flex-col gap-2 w-[340px]" id="facescan-toaster">
@@ -444,12 +430,12 @@ export default function App() {
 
       {/* 2. Sleek Smartphone Chassis Container Wrapper */}
       <div 
-        className="w-full sm:max-w-[385px] sm:h-[812px] bg-[#0F172A] border-0 sm:border-[8px] sm:border-slate-800 rounded-none sm:rounded-[40px] shadow-2xl relative overflow-hidden flex flex-col justify-between"
+        className={`w-full sm:max-w-[385px] sm:h-[812px] ${isHomeNative ? 'bg-transparent' : 'bg-[#0F172A]'} border-0 sm:border-[8px] sm:border-slate-800 rounded-none sm:rounded-[40px] shadow-2xl relative overflow-hidden flex flex-col justify-between`}
         id="facescan-mobile-chassis"
       >
         
         {/* Device Screen Header with simulated status bars */}
-        <div className="px-5 pt-3 pb-2 flex justify-between items-center bg-[#0F172A] border-b border-slate-800/40 select-none text-xs font-mono text-[#94A3B8]" id="mobile-notch-header">
+        <div className={`px-5 pt-3 pb-2 flex justify-between items-center ${isHomeNative ? 'bg-transparent border-transparent' : 'bg-[#0F172A] border-b border-slate-800/40'} select-none text-xs font-mono text-[#94A3B8]`} id="mobile-notch-header">
           <div className="flex items-center gap-1 font-semibold text-emerald-500">
             <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
             <span>OFFLINE LOCAL RECOGNITION</span>
@@ -465,7 +451,7 @@ export default function App() {
         </div>
 
         {/* 3. APP TOP NAV ACTION BAR */}
-        <header className="px-5 py-4 flex items-center justify-between border-b border-slate-800/70" id="facescan-app-header">
+        <header className={`px-5 py-4 flex items-center justify-between ${isHomeNative ? 'border-transparent' : 'border-b border-slate-800/70'}`} id="facescan-app-header">
           <div className="flex items-center gap-2">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-ping"></div>
             <h1 className="text-md font-extrabold tracking-widest text-[#F8FAFC]">
@@ -473,6 +459,21 @@ export default function App() {
             </h1>
           </div>
           <div className="flex items-center gap-2">
+            {/* Top Right Actions */}
+            {activeScreen === 'camera' && (
+              <button
+                onClick={() => setTipsExpanded((prev) => !prev)}
+                className={`p-2 rounded-xl transition relative active:scale-95 ${
+                  tipsExpanded 
+                    ? 'text-yellow-400 bg-yellow-500/10'
+                    : 'text-[#94A3B8] hover:text-[#F8FAFC] bg-[#1E293B]/60 hover:bg-[#1E293B]'
+                }`}
+                aria-label="Toggle scanning tips"
+              >
+                <Lightbulb className="w-5 h-5" />
+              </button>
+            )}
+            
             {/* Hamburger opens scan history drawer */}
             <button
               onClick={() => setHistoryOpen(true)}
@@ -548,16 +549,15 @@ export default function App() {
                       <AlertTriangle className="w-12 h-12 text-[#F43F5E] mx-auto mb-3" />
                       <h3 className="text-base font-bold text-[#F8FAFC] mb-1">Camera Unavailable</h3>
                       <p className="text-xs text-[#94A3B8] mb-4">
-                        Camera unavailable on this device. Use the face simulator button instead.
+                        Camera unavailable on this device. You can still upload a photo.
                       </p>
                       <button
                         onClick={() => {
-                          setCameraUnavailable(false);
-                          setSimulatorOpen(true);
+                          fileInputRef.current?.click();
                         }}
                         className="px-4 py-2 bg-[#1E293B] border border-slate-700 text-[#F8FAFC] font-semibold text-xs rounded-xl mx-auto transition active:scale-95"
                       >
-                        Try Simulator
+                        Upload Photo
                       </button>
                     </div>
                   ) : (
@@ -565,7 +565,7 @@ export default function App() {
                     <div className="flex flex-col items-center justify-center">
                       
                       {/* Interactive visual viewfinder with dynamic scan animation overlay */}
-                      <div className="relative w-72 h-72 rounded-[40px] border-4 border-slate-800 bg-[#1E293B]/20 overflow-hidden shadow-inner flex items-center justify-center group" id="face-scanner-viewfinder">
+                      <div className={`relative w-72 h-72 rounded-[40px] border-4 ${isNative ? 'border-transparent bg-transparent shadow-none' : 'border-slate-800 bg-[#1E293B]/20 shadow-inner'} overflow-hidden flex items-center justify-center group`} id="face-scanner-viewfinder">
                         
                         {/* Cool corner brackets */}
                         <div className="absolute top-5 left-5 w-8 h-8 border-t-4 border-l-4 border-blue-500 rounded-tl-lg"></div>
@@ -580,10 +580,12 @@ export default function App() {
                           className="absolute left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-blue-500 to-transparent z-10 shadow-[0_0_8px_rgba(59,130,246,0.8)]"
                         ></motion.div>
 
-                        {/* Static face silhouette inside bracket guide */}
-                        <div className="opacity-15 text-slate-400 group-hover:scale-105 group-hover:opacity-20 transition duration-500">
-                          <User className="w-44 h-44 stroke-[1]" />
-                        </div>
+                        {/* Static face silhouette inside bracket guide (only when NOT native) */}
+                        {!isNative && (
+                          <div className="opacity-15 text-slate-400 group-hover:scale-105 group-hover:opacity-20 transition duration-500">
+                            <User className="w-44 h-44 stroke-[1]" />
+                          </div>
+                        )}
 
                         {/* Loading Model overlay */}
                         {modelLoading && (
@@ -635,24 +637,37 @@ export default function App() {
                         <span>Look directly at the camera for best results</span>
                       </li>
                     </ul>
+                    
+                    <div className="mt-2 pt-2 border-t border-slate-700 flex items-center gap-2">
+                      <input 
+                        type="checkbox" 
+                        id="dismiss-tips" 
+                        checked={tipsDismissed}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setTipsDismissed(checked);
+                          Preferences.set({ key: 'tips_dismissed', value: checked ? 'true' : 'false' });
+                        }}
+                        className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-800 accent-blue-500"
+                      />
+                      <label htmlFor="dismiss-tips" className="text-[10px] text-slate-400 select-none cursor-pointer">
+                        Don't auto-show tips again
+                      </label>
+                    </div>
                   </div>
                 </div>
 
                 {/* BOTTOM CAMERA CONTROL RAIL */}
                 <div className="flex items-center justify-between px-6 w-full mt-auto pt-4" id="camera-controls-rail">
                   
-                  {/* Collapsible Tips Button (Bottom Left) */}
+                  {/* Gallery Pick Button (Bottom Left) */}
                   <button
-                    onClick={() => setTipsExpanded((prev) => !prev)}
-                    className={`p-3 border rounded-full transition-all duration-300 active:scale-90 ${
-                      tipsExpanded
-                        ? 'text-yellow-400 bg-yellow-500/10 border-yellow-500/30 shadow-[0_0_12px_rgba(234,179,8,0.2)]'
-                        : 'text-slate-400 hover:text-white bg-slate-800/40 hover:bg-slate-800 border-slate-850'
-                    }`}
-                    id="toggle-tips-button"
-                    title="Toggle scanning tips"
+                    onClick={handleGalleryPick}
+                    className="p-3 border rounded-full transition-all duration-300 active:scale-90 text-slate-400 hover:text-white bg-slate-800/40 hover:bg-slate-800 border-slate-850"
+                    id="gallery-picker-button"
+                    title="Choose from Gallery"
                   >
-                    <Lightbulb className="w-5 h-5" />
+                    <Images className="w-5 h-5" />
                   </button>
  
                   {/* Hidden file input kept in DOM for browser testing capability */}
@@ -1036,124 +1051,6 @@ export default function App() {
             </>
           )}
         </AnimatePresence>
-
-        {/* 7. QUICK PRESET BROWSER SIMULATION DOCK PANEL (POPUP DRAWER) */}
-        <AnimatePresence>
-          {simulatorOpen && (
-            <>
-              {/* Backing dim */}
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 0.5 }}
-                exit={{ opacity: 0 }}
-                onClick={() => setSimulatorOpen(false)}
-                className="absolute inset-0 bg-black z-30"
-              ></motion.div>
-
-              {/* Simulation dock view */}
-              <motion.div
-                initial={{ y: '100%' }}
-                animate={{ y: 0 }}
-                exit={{ y: '100%' }}
-                transition={{ type: 'spring', damping: 25, stiffness: 220 }}
-                className="absolute shrink-0 bottom-0 inset-x-0 bg-[#1E293B] border-t border-slate-700 rounded-t-[28px] p-5 z-40 shadow-2xl flex flex-col gap-4 max-h-[85%]"
-                id="simulator-dock"
-              >
-                
-                {/* Header info */}
-                <div className="flex items-center justify-between border-b border-slate-800 pb-3 select-none">
-                  <div className="flex items-center gap-1.5 text-blue-400 font-extrabold text-sm tracking-wide">
-                    <Sparkles className="w-4 h-4 animate-spin-slow" />
-                    <span>BROWSER DEVICE SIMULATION</span>
-                  </div>
-                  <button onClick={() => setSimulatorOpen(false)} className="p-1.5 bg-slate-900/40 text-slate-400 rounded-lg" aria-label="Close simulator dock">
-                    <X className="w-4.5 h-4.5" />
-                  </button>
-                </div>
-
-                <p className="text-xs text-[#94A3B8] leading-normal leading-relaxed -mt-1 select-none">
-                  Inside browser previews or sandboxed container frames, access to the real hardware camera can be blocked by host browser security policies. Choose a simulated preset portrait below to fully evaluate all of the application's matching layouts, states, and persistent offline history logic instantly:
-                </p>
-
-                {/* Simulated profiles choices */}
-                <div className="flex flex-col gap-2.5" id="presets-container">
-                  
-                  {/* Preset 1: John Doe (A successful match) */}
-                  <button
-                    onClick={() => executeSimulation('john')}
-                    className="flex items-center gap-3 w-full p-2.5 bg-[#0F172A] hover:bg-slate-900/60 rounded-xl border border-slate-800 text-left transition duration-150 active:scale-98 hover:border-emerald-500/50 group"
-                  >
-                    <div className="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center flex-shrink-0 text-emerald-400">
-                      <UserCheck className="w-5 h-5 group-hover:scale-110 transition" />
-                    </div>
-                    <div className="flex-1">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-xs font-black text-white">Preset A: John Doe</span>
-                        <span className="text-[9px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1 rounded-sm">
-                          SUCCESS MATCHER
-                        </span>
-                      </div>
-                      <p className="text-[10px] text-slate-500 leading-none mt-1">Tests State A layout &mdash; confidence rate 94%</p>
-                    </div>
-                  </button>
-
-                  {/* Preset 2: Jane Smith (Low Confidence) */}
-                  <button
-                    onClick={() => executeSimulation('jane')}
-                    className="flex items-center gap-3 w-full p-2.5 bg-[#0F172A] hover:bg-slate-900/60 rounded-xl border border-slate-800 text-left transition duration-150 active:scale-98 hover:border-amber-500/50 group"
-                  >
-                    <div className="w-10 h-10 rounded-lg bg-amber-500/10 flex items-center justify-center flex-shrink-0 text-amber-400">
-                      <AlertTriangle className="w-5 h-5 group-hover:scale-110 transition" />
-                    </div>
-                    <div className="flex-1">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-xs font-black text-white">Preset B: Jane Smith</span>
-                        <span className="text-[9px] bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1 rounded-sm">
-                          LOW CONFIDENCE
-                        </span>
-                      </div>
-                      <p className="text-[10px] text-slate-500 leading-none mt-1">Tests State B layout &mdash; confidence rate 68%</p>
-                    </div>
-                  </button>
-
-                  {/* Preset 3: Unknown / Environment (No Face Detected) */}
-                  <button
-                    onClick={() => executeSimulation('unknown')}
-                    className="flex items-center gap-3 w-full p-2.5 bg-[#0F172A] hover:bg-slate-900/60 rounded-xl border border-slate-800 text-left transition duration-150 active:scale-98 hover:border-rose-500/50 group"
-                  >
-                    <div className="w-10 h-10 rounded-lg bg-rose-500/10 flex items-center justify-center flex-shrink-0 text-rose-400">
-                      <HelpCircle className="w-5 h-5 group-hover:scale-110 transition" />
-                    </div>
-                    <div className="flex-1">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-xs font-black text-white">Preset C: Unknown Environment</span>
-                        <span className="text-[9px] bg-rose-500/10 text-[#F43F5E] border border-rose-500/20 px-1 rounded-sm">
-                          NO FACE
-                        </span>
-                      </div>
-                      <p className="text-[10px] text-slate-500 leading-none mt-1">Tests State C layout &mdash; confidence rate 34%</p>
-                    </div>
-                  </button>
-
-                  {/* Custom Test Upload Button (Standard Input fallback trigger value) */}
-                  <button
-                    onClick={() => {
-                      setSimulatorOpen(false);
-                      fileInputRef.current?.click();
-                    }}
-                    className="flex items-center justify-center gap-2 py-3 bg-[#151D2A] hover:bg-slate-900 text-[#F8FAFC] border border-slate-800 font-bold text-xs rounded-xl transition duration-150 active:scale-95 cursor-pointer mt-1"
-                  >
-                    <ImageIcon className="w-4 h-4 text-blue-400" />
-                    Upload Custom Portrait File
-                  </button>
-
-                </div>
-
-              </motion.div>
-            </>
-          )}
-        </AnimatePresence>
-
       </div>
 
     </div>
