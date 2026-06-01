@@ -26,6 +26,7 @@ export async function capturePhoto(direction: 'front' | 'rear'): Promise<string>
  * 3. Resizes it to 224x224 on an offscreen canvas.
  * 4. Yields both the canvas and the cropped 224x224 base64 representation.
  */
+// Teachable Machine models are trained on 224x224 square images. Skipping this step distorts face proportions and lowers confidence scores.
 export function preprocessImage(base64String: string): Promise<{ canvas: HTMLCanvasElement; preprocessedBase64: string }> {
   return new Promise((resolve, reject) => {
     const img = new Image();

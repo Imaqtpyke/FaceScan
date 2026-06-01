@@ -1,8 +1,1 @@
-{
-  "modelName": "FACESCAN Offline Recognition",
-  "labels": [
-    "John Doe (ID: 2021-00123)",
-    "Jane Smith (ID: 2021-00567)",
-    "Environment / Unknown"
-  ]
-}
+{"tfjsVersion":"1.7.4","tmVersion":"2.4.14","packageVersion":"0.8.4-alpha2","packageName":"@teachablemachine/image","timeStamp":"2026-06-01T03:49:39.977Z","userMetadata":{},"modelName":"tm-my-image-model","labels":["Angel Grullo","Angel Sumalale","Cedrick Ari","Charmaine Lacson","Crisha Mariz Esquivel","Denica Sarad","Diana Elizabeth Alcazar","Era Mae Dela Cruz","Haven Angela Dollete","Jolina Mendoza","Joseph Suarez","Khey M. Condesa","Kovan Hebra","Krystal Joy Dela Cruz","Llyod Gian Madrid","Ma. Madonna Sapitanan","Margie Samillano","Regine Perfas","Rene Palacios","Rica Jean Ordoras","Rosanette Nepomuceno","Sharon Rose Villaluz","Environment"],"imageSize":224}

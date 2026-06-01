@@ -3,37 +3,26 @@ import { ScanResult } from '../types';
 
 const HISTORY_KEY = 'facescan_history';
 
-// Helper to check if Capacitor Preferences is available and working
-async function isCapacitorAvailable(): Promise<boolean> {
-  try {
-    // Attempt a simple check
-    await Preferences.get({ key: '_test_pref_' });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export async function getScanHistory(): Promise<ScanResult[]> {
   try {
-    const isCap = await isCapacitorAvailable();
-    if (isCap) {
+    try {
       const { value } = await Preferences.get({ key: HISTORY_KEY });
       if (value) {
         return JSON.parse(value) as ScanResult[];
       }
-    } else {
-      // Fallback for browser preview
+      return [];
+    } catch (prefError) {
+      console.warn('Capacitor Preferences failed, falling back to localStorage:', prefError);
       const localValue = localStorage.getItem(HISTORY_KEY);
       if (localValue) {
         return JSON.parse(localValue) as ScanResult[];
       }
+      return [];
     }
   } catch (error) {
     console.error('Error fetching scan history:', error);
     throw new Error('Unable to load history.');
   }
-  return [];
 }
 
 export async function saveScanResult(result: ScanResult): Promise<void> {
@@ -43,14 +32,13 @@ export async function saveScanResult(result: ScanResult): Promise<void> {
     const updatedHistory = [result, ...history];
     const stringified = JSON.stringify(updatedHistory);
 
-    const isCap = await isCapacitorAvailable();
-    if (isCap) {
+    try {
       await Preferences.set({
         key: HISTORY_KEY,
         value: stringified,
       });
-    } else {
-      // Fallback for browser preview
+    } catch (prefError) {
+      console.warn('Capacitor Preferences failed to save, falling back to localStorage:', prefError);
       localStorage.setItem(HISTORY_KEY, stringified);
     }
   } catch (error) {
@@ -59,12 +47,30 @@ export async function saveScanResult(result: ScanResult): Promise<void> {
   }
 }
 
+export async function deleteScanResult(id: string): Promise<void> {
+  try {
+    const history = await getScanHistory();
+    const updated = history.filter((item) => item.id !== id);
+    const stringified = JSON.stringify(updated);
+
+    try {
+      await Preferences.set({ key: HISTORY_KEY, value: stringified });
+    } catch (prefError) {
+      console.warn('Capacitor Preferences failed to delete entry, falling back to localStorage:', prefError);
+      localStorage.setItem(HISTORY_KEY, stringified);
+    }
+  } catch (error) {
+    console.error('Error deleting scan result:', error);
+    throw new Error('Could not delete scan entry.');
+  }
+}
+
 export async function clearScanHistory(): Promise<void> {
   try {
-    const isCap = await isCapacitorAvailable();
-    if (isCap) {
+    try {
       await Preferences.remove({ key: HISTORY_KEY });
-    } else {
+    } catch (prefError) {
+      console.warn('Capacitor Preferences failed to clear, falling back to localStorage:', prefError);
       localStorage.removeItem(HISTORY_KEY);
     }
   } catch (error) {

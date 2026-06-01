@@ -1,4 +1,6 @@
 import * as tmImage from '@teachablemachine/image';
+import personsData from '../data/persons.json';
+import { CONFIDENCE_THRESHOLDS } from '../config/thresholds';
 
 const modelUrl = '/model/model.json';
 const metadataUrl = '/model/metadata.json';
@@ -63,6 +65,54 @@ export function parseLabel(label: string): { name: string; studentId?: string } 
 }
 
 /**
+ * Resolves a Teachable Machine classLabel and probability using the persons.json database
+ * and confidence thresholds configuration.
+ */
+export function resolvePrediction(classLabel: string, probability: number): ClassificationResult {
+  const confidence = Math.round(probability * 100);
+  const highThreshold = CONFIDENCE_THRESHOLDS.HIGH * 100;
+  const lowThreshold = CONFIDENCE_THRESHOLDS.LOW * 100;
+
+  // State C: Environment class → always no-detection, regardless of confidence
+  if (classLabel === 'Environment') {
+    return {
+      name: 'No person or face detected.',
+      confidence: confidence,
+      status: 'error',
+    };
+  }
+
+  const matchedPerson = personsData.find(p => p.classLabel === classLabel);
+
+  // State C: below low threshold OR no matching person in DB
+  if (!matchedPerson || matchedPerson.name === null || confidence < lowThreshold) {
+    return {
+      name: 'No person or face detected.',
+      confidence: confidence,
+      status: 'error',
+    };
+  }
+
+  // State A: high confidence
+  if (confidence >= highThreshold) {
+    return {
+      name: matchedPerson.name,
+      studentId: matchedPerson.studentId ?? undefined,
+      confidence: confidence,
+      status: 'success',
+    };
+  }
+
+  // State B: low-to-high confidence
+  return {
+    name: matchedPerson.name,
+    studentId: matchedPerson.studentId ?? undefined,
+    confidence: confidence,
+    status: 'warning',
+  };
+}
+
+/**
  * Classifies an image rendered on a canvas.
  * Falls back gracefully to visual heuristic simulation if WebGL is unavailable or isolated.
  */
@@ -77,33 +127,7 @@ export async function classifyCanvas(canvas: HTMLCanvasElement): Promise<Classif
     predictions.sort((a, b) => b.probability - a.probability);
     
     const topPrediction = predictions[0];
-    const confidence = Math.round(topPrediction.probability * 100);
-    const parsedLabel = parseLabel(topPrediction.className);
-
-    // If top prediction class contains "Environment" or has very low confidence < 50
-    const isEnvironment = topPrediction.className.toLowerCase().includes('environment') || topPrediction.className.toLowerCase().includes('unknown');
-
-    if (isEnvironment || confidence < 50) {
-      return {
-        name: 'No Face Detected',
-        confidence: confidence,
-        status: 'error',
-      };
-    } else if (confidence >= 75) {
-      return {
-        name: parsedLabel.name,
-        studentId: parsedLabel.studentId,
-        confidence: confidence,
-        status: 'success',
-      };
-    } else {
-      return {
-        name: parsedLabel.name,
-        studentId: parsedLabel.studentId,
-        confidence: confidence,
-        status: 'warning',
-      };
-    }
+    return resolvePrediction(topPrediction.className, topPrediction.probability);
   } catch (err) {
     console.warn('Prediction error inside TFJS, switching to visual fallback heuristics.');
     
@@ -130,25 +154,11 @@ export async function classifyCanvas(canvas: HTMLCanvasElement): Promise<Classif
     const colorHeuristic = Math.round(avgR + avgG + avgB) % 3;
 
     if (colorHeuristic === 0) {
-      return {
-        name: 'John Doe',
-        studentId: '2021-00123',
-        confidence: 94,
-        status: 'success',
-      };
+      return resolvePrediction('Cedrick Ari', 0.94);
     } else if (colorHeuristic === 1) {
-      return {
-        name: 'Jane Smith',
-        studentId: '2021-00567',
-        confidence: 68,
-        status: 'warning',
-      };
+      return resolvePrediction('Rica Jean Ordoras', 0.68);
     } else {
-      return {
-        name: 'No Face Detected',
-        confidence: 34,
-        status: 'error',
-      };
+      return resolvePrediction('Environment', 0.34);
     }
   }
 }

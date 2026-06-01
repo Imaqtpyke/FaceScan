@@ -4,5 +4,8 @@ dist/
 coverage/
 .DS_Store
 *.log
-.env*
-!.env.example
+.env
+.env.local
+
+# Remove this line after running npx cap add android if you want to track the native project
+android/

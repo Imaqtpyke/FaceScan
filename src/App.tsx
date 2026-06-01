@@ -17,12 +17,13 @@ import {
   Sparkles,
   RefreshCw,
   Image as ImageIcon,
-  UserCheck
+  UserCheck,
+  Lightbulb
 } from 'lucide-react';
 
 import { ScanResult, ScreenState, CameraDirectionType } from './types';
 import { capturePhoto, preprocessImage } from './services/camera';
-import { getScanHistory, saveScanResult, clearScanHistory } from './services/storage';
+import { getScanHistory, saveScanResult, clearScanHistory, deleteScanResult } from './services/storage';
 import { classifyCanvas, loadTeachableMachineModel } from './services/faceModel';
 
 export default function App() {
@@ -30,6 +31,7 @@ export default function App() {
   const [activeScreen, setActiveScreen] = useState<ScreenState>('camera');
   const [historyOpen, setHistoryOpen] = useState(false);
   const [simulatorOpen, setSimulatorOpen] = useState(false);
+  const [tipsExpanded, setTipsExpanded] = useState(false);
 
   // Model & Core State
   const [modelLoading, setModelLoading] = useState(true);
@@ -48,6 +50,9 @@ export default function App() {
   const [historyList, setHistoryList] = useState<ScanResult[]>([]);
   const [historyError, setHistoryError] = useState(false);
   const [showClearConfirmation, setShowClearConfirmation] = useState(false);
+
+  // Track which history entry IDs are fading out before removal
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
 
   // Toasts Alert State
   interface Toast {
@@ -256,6 +261,26 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
+  // Delete a single history entry with fade-out animation then persist
+  const handleDeleteSingleEntry = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setDeletingIds((prev) => new Set(prev).add(id));
+    setTimeout(async () => {
+      try {
+        await deleteScanResult(id);
+        setHistoryList((prev) => prev.filter((item) => item.id !== id));
+      } catch {
+        triggerToast('Could not delete scan entry.', 'error');
+      } finally {
+        setDeletingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      }
+    }, 200);
+  };
+
   // Storage history cleaner triggers
   const handleClearHistory = async () => {
     try {
@@ -415,18 +440,7 @@ export default function App() {
         </AnimatePresence>
       </div>
 
-      {/* Portrait Simulator Trigger (Floating Action Button in Web Sandbox) */}
-      <button
-        onClick={() => setSimulatorOpen(true)}
-        className="fixed bottom-6 right-6 bg-blue-600 hover:bg-blue-700 text-white rounded-full p-4 shadow-xl z-40 flex items-center gap-2 group transition-all duration-300 md:scale-105 active:scale-95"
-        id="simulate-scan-fab"
-        title="Open browser face recognition controls"
-      >
-        <Sparkles className="w-5 h-5 animate-pulse" />
-        <span className="max-w-0 overflow-hidden group-hover:max-w-[130px] transition-all duration-300 ease-in-out font-medium text-sm whitespace-nowrap">
-          Face Simulator
-        </span>
-      </button>
+      {/* Face Simulator FAB removed from visible UI for production cleanup but logic kept intact */}
 
       {/* 2. Sleek Smartphone Chassis Container Wrapper */}
       <div 
@@ -551,13 +565,13 @@ export default function App() {
                     <div className="flex flex-col items-center justify-center">
                       
                       {/* Interactive visual viewfinder with dynamic scan animation overlay */}
-                      <div className="relative w-60 h-60 rounded-[32px] border-4 border-slate-800 bg-[#1E293B]/20 overflow-hidden shadow-inner flex items-center justify-center group" id="face-scanner-viewfinder">
+                      <div className="relative w-72 h-72 rounded-[40px] border-4 border-slate-800 bg-[#1E293B]/20 overflow-hidden shadow-inner flex items-center justify-center group" id="face-scanner-viewfinder">
                         
                         {/* Cool corner brackets */}
-                        <div className="absolute top-4 left-4 w-6 h-6 border-t-4 border-l-4 border-blue-500 rounded-tl-lg"></div>
-                        <div className="absolute top-4 right-4 w-6 h-6 border-t-4 border-r-4 border-blue-500 rounded-tr-lg"></div>
-                        <div className="absolute bottom-4 left-4 w-6 h-6 border-b-4 border-l-4 border-blue-500 rounded-bl-lg"></div>
-                        <div className="absolute bottom-4 right-4 w-6 h-6 border-b-4 border-r-4 border-blue-500 rounded-br-lg"></div>
+                        <div className="absolute top-5 left-5 w-8 h-8 border-t-4 border-l-4 border-blue-500 rounded-tl-lg"></div>
+                        <div className="absolute top-5 right-5 w-8 h-8 border-t-4 border-r-4 border-blue-500 rounded-tr-lg"></div>
+                        <div className="absolute bottom-5 left-5 w-8 h-8 border-b-4 border-l-4 border-blue-500 rounded-bl-lg"></div>
+                        <div className="absolute bottom-5 right-5 w-8 h-8 border-b-4 border-r-4 border-blue-500 rounded-br-lg"></div>
 
                         {/* Scanner Laser Sweep Line */}
                         <motion.div
@@ -568,7 +582,7 @@ export default function App() {
 
                         {/* Static face silhouette inside bracket guide */}
                         <div className="opacity-15 text-slate-400 group-hover:scale-105 group-hover:opacity-20 transition duration-500">
-                          <User className="w-36 h-36 stroke-[1]" />
+                          <User className="w-44 h-44 stroke-[1]" />
                         </div>
 
                         {/* Loading Model overlay */}
@@ -584,31 +598,74 @@ export default function App() {
                       </div>
 
                       {/* Instructions */}
-                      <p className="mt-5 text-sm font-medium text-slate-400 select-none text-center">
-                        Position your face and tap capture
+                      <p className="mt-6 text-sm font-medium text-slate-400 select-none text-center max-w-[280px] leading-relaxed">
+                        Position your face inside the frame and tap capture
                       </p>
                     </div>
                   )}
 
                 </div>
+ 
+                {/* Collapsible Tips Panel */}
+                <div 
+                  className={`overflow-hidden transition-all duration-300 w-full ${
+                    tipsExpanded ? 'max-h-[220px] opacity-100 mt-4 mb-2' : 'max-h-0 opacity-0 mt-0 mb-0 pointer-events-none'
+                  }`}
+                  id="scanning-tips-panel"
+                >
+                  <div className="bg-[#1E293B]/90 border border-slate-800 rounded-2xl p-4 shadow-xl flex flex-col gap-2.5">
+                    <p className="text-xs font-bold text-blue-400 select-none uppercase tracking-wider flex items-center gap-1.5">
+                      <Lightbulb className="w-3.5 h-3.5 text-yellow-400" /> Quick Tips
+                    </p>
+                    <ul className="flex flex-col gap-2 text-xs text-slate-300">
+                      <li className="flex items-start gap-2">
+                        <span className="flex-shrink-0">💡</span>
+                        <span>Ensure your face is well-lit and clearly visible</span>
+                      </li>
+                      <li className="flex items-start gap-2">
+                        <span className="flex-shrink-0">💡</span>
+                        <span>Hold the camera steady before capturing</span>
+                      </li>
+                      <li className="flex items-start gap-2">
+                        <span className="flex-shrink-0">💡</span>
+                        <span>Avoid covering your face with accessories</span>
+                      </li>
+                      <li className="flex items-start gap-2">
+                        <span className="flex-shrink-0">💡</span>
+                        <span>Look directly at the camera for best results</span>
+                      </li>
+                    </ul>
+                  </div>
+                </div>
 
                 {/* BOTTOM CAMERA CONTROL RAIL */}
-                <div className="flex items-center justify-center gap-10 mt-auto pt-4" id="camera-controls-rail">
+                <div className="flex items-center justify-between px-6 w-full mt-auto pt-4" id="camera-controls-rail">
                   
-                  {/* File Upload Selector (Safe alternative for review) */}
-                  <label className="p-3 text-slate-400 hover:text-white bg-slate-800/40 hover:bg-slate-800 border border-slate-850 rounded-full cursor-pointer transition active:scale-90" title="Upload selfie file to crop and classify">
-                    <ImageIcon className="w-5 h-5" />
-                    <input
-                      type="file"
-                      id="upload-selfie-file"
-                      ref={fileInputRef}
-                      onChange={handleFileUpload}
-                      accept="image/*"
-                      className="hidden"
-                    />
-                  </label>
-
-                  {/* Main capture trigger */}
+                  {/* Collapsible Tips Button (Bottom Left) */}
+                  <button
+                    onClick={() => setTipsExpanded((prev) => !prev)}
+                    className={`p-3 border rounded-full transition-all duration-300 active:scale-90 ${
+                      tipsExpanded
+                        ? 'text-yellow-400 bg-yellow-500/10 border-yellow-500/30 shadow-[0_0_12px_rgba(234,179,8,0.2)]'
+                        : 'text-slate-400 hover:text-white bg-slate-800/40 hover:bg-slate-800 border-slate-850'
+                    }`}
+                    id="toggle-tips-button"
+                    title="Toggle scanning tips"
+                  >
+                    <Lightbulb className="w-5 h-5" />
+                  </button>
+ 
+                  {/* Hidden file input kept in DOM for browser testing capability */}
+                  <input
+                    type="file"
+                    id="upload-selfie-file"
+                    ref={fileInputRef}
+                    onChange={handleFileUpload}
+                    accept="image/*"
+                    className="hidden"
+                  />
+ 
+                  {/* Main capture trigger (Center) */}
                   <button
                     onClick={handleCapturePhoto}
                     disabled={modelLoading || modelError}
@@ -624,8 +681,8 @@ export default function App() {
                       <Camera className="w-8 h-8 text-[#0F172A]" />
                     </div>
                   </button>
-
-                  {/* Flip direction button */}
+ 
+                  {/* Flip direction button (Bottom Right) */}
                   <button
                     onClick={toggleFlipCamera}
                     className="p-3 text-slate-400 hover:text-white bg-slate-800/40 hover:bg-slate-800 border border-slate-850 rounded-full transition active:scale-90"
@@ -894,10 +951,12 @@ export default function App() {
                               setActiveScreen('results');
                               setHistoryOpen(false);
                             }}
-                            className="bg-[#0F172A]/75 outline-0 hover:bg-[#0F172A] p-2.5 border border-slate-800/80 rounded-xl flex gap-3 items-center cursor-pointer hover:border-slate-700 transition duration-200 active:scale-98 relative group"
+                            className={`bg-[#0F172A]/75 outline-0 hover:bg-[#0F172A] p-2.5 border border-slate-800/80 rounded-xl flex gap-3 items-center cursor-pointer hover:border-slate-700 active:scale-98 relative group transition-all duration-200 ${
+                              deletingIds.has(item.id) ? 'opacity-0 pointer-events-none' : 'opacity-100'
+                            }`}
                           >
-                            {/* Class/Status color bullet tag dot */}
-                            <div className={`absolute top-2.5 right-2.5 w-2 h-2 rounded-full ${
+                            {/* Class/Status color bullet dot — shifted left to make room for trash btn */}
+                            <div className={`absolute top-2.5 right-9 w-2 h-2 rounded-full ${
                               item.status === 'success' ? 'bg-emerald-500' :
                               item.status === 'warning' ? 'bg-amber-500' : 'bg-rose-500'
                             }`} title={`Status: ${item.status}`}></div>
@@ -911,7 +970,7 @@ export default function App() {
                             />
 
                             {/* Information detail block */}
-                            <div className="flex-1 min-w-0 pr-2">
+                            <div className="flex-1 min-w-0 pr-1">
                               <h4 className="text-xs font-black text-white truncate leading-snug">{item.name}</h4>
                               {item.studentId && (
                                 <p className="text-[10px] font-mono text-blue-400 leading-snug">ID: {item.studentId}</p>
@@ -920,6 +979,17 @@ export default function App() {
                                 {item.timestamp}
                               </p>
                             </div>
+
+                            {/* Per-entry delete button — subtle, reveals on hover */}
+                            <button
+                              onClick={(e) => handleDeleteSingleEntry(item.id, e)}
+                              className="flex-shrink-0 p-1.5 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 transition-colors duration-150 opacity-0 group-hover:opacity-100 focus:opacity-100"
+                              aria-label={`Delete scan for ${item.name}`}
+                              id={`delete-entry-${item.id}`}
+                              title="Delete this entry"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
                           </div>
                         ))}
                       </div>
