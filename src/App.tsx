@@ -24,14 +24,15 @@ import { Preferences } from '@capacitor/preferences';
 import { Camera as CapCamera, CameraResultType, CameraSource } from '@capacitor/camera';
 
 import { ScanResult, ScreenState, CameraDirectionType } from './types';
-import { preprocessImage } from './services/camera';
+import { canvasToBase64, preprocessImage } from './services/camera';
 import {
   captureVideoFrame,
   startCameraStream,
   stopMediaStream,
 } from './services/cameraStream';
 import { getScanHistory, saveScanResult, clearScanHistory, deleteScanResult } from './services/storage';
-import { classifyCanvas, loadTeachableMachineModel } from './services/faceModel';
+import { classifyCanvas, loadAllModels, loadTeachableMachineModel } from './services/faceModel';
+import { THRESHOLD_LABELS } from './config/thresholds';
 import { ClassBreakdown } from './components/ClassBreakdown';
 import { openAppSettings } from './utils/openAppSettings';
 
@@ -99,7 +100,7 @@ export default function App() {
 
     async function initializeCoreApp() {
       try {
-        await loadTeachableMachineModel();
+        await loadAllModels();
       } catch (err) {
         console.error('Offline TM Model Loader failed on startup:', err);
         if (active) setModelError(true);
@@ -326,10 +327,38 @@ export default function App() {
   const processAndClassify = async (base64Data: string) => {
     setIsAnalyzing(true);
     try {
-      // 1. Resize and crop to 224x224 1:1 on hidden canvas
-      const { canvas, preprocessedBase64 } = await preprocessImage(base64Data);
+      const canvas = await preprocessImage(base64Data);
 
-      // 2. Classify using offline TM model (or fallback metrics helper)
+      if (!canvas) {
+        const photoBase64 = base64Data.startsWith('data:')
+          ? base64Data
+          : `data:image/jpeg;base64,${base64Data}`;
+        const newResult: ScanResult = {
+          id: `scan_${Date.now()}`,
+          photoBase64,
+          name: 'No person or face detected.',
+          confidence: 0,
+          timestamp: getFormattedDate(),
+          status: 'error',
+          topClassLabel: 'Environment',
+          classPredictions: [],
+          thresholds: { ...THRESHOLD_LABELS },
+        };
+        try {
+          await saveScanResult(newResult);
+          const refreshed = await getScanHistory();
+          setHistoryList(refreshed);
+        } catch {
+          triggerToast('Could not save scan to history.', 'error');
+        }
+        setActiveResult(newResult);
+        setActiveScreen('results');
+        return;
+      }
+
+      const preprocessedBase64 = canvasToBase64(canvas);
+
+      // Classify using offline TM model (or fallback metrics helper)
       const classification = await classifyCanvas(canvas);
 
       // 3. Assemble scan result struct
@@ -521,8 +550,8 @@ export default function App() {
     setModelLoading(true);
     setModelError(false);
     try {
-      await loadTeachableMachineModel();
-      triggerToast('Face recognition model loaded successfully!', 'success');
+      await loadAllModels();
+      triggerToast('Models loaded successfully!', 'success');
     } catch (err) {
       console.error(err);
       setModelError(true);
@@ -744,9 +773,9 @@ export default function App() {
                           <div className="absolute inset-0 bg-[#0F172A]/90 p-4 flex flex-col items-center justify-center text-center z-20">
                             <RefreshCw className="w-8 h-8 text-blue-500 animate-spin mb-3" />
                             <p className="text-xs font-semibold tracking-wider text-blue-400 animate-pulse">
-                              LOADING MODEL...
+                              LOADING MODELS...
                             </p>
-                            <p className="text-[10px] text-slate-500 mt-1">Initializing TensorFlow local files</p>
+                            <p className="text-[10px] text-slate-500 mt-1">Initializing face detection and recognition</p>
                           </div>
                         )}
                       </div>

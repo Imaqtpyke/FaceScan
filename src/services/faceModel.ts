@@ -1,3 +1,4 @@
+import * as faceapi from 'face-api.js';
 import * as tmImage from '@teachablemachine/image';
 import personsData from '../data/persons.json';
 import { CONFIDENCE_THRESHOLDS, THRESHOLD_LABELS } from '../config/thresholds';
@@ -60,7 +61,21 @@ function buildClassificationResult(
 }
 
 let loadedModel: tmImage.CustomMobileNet | null = null;
+let faceApiModelsLoaded = false;
 let modelLoadingErrorOccurred = false;
+
+const FACE_API_MODEL_URI = '/face-api-models/ssd_mobilenetv1';
+
+export async function loadFaceApiModels(): Promise<void> {
+  if (faceApiModelsLoaded) return;
+  await faceapi.nets.ssdMobilenetv1.loadFromUri(FACE_API_MODEL_URI);
+  faceApiModelsLoaded = true;
+}
+
+/** Load Teachable Machine + face-api.js SSD models (required before capture). */
+export async function loadAllModels(): Promise<void> {
+  await Promise.all([loadTeachableMachineModel(), loadFaceApiModels()]);
+}
 
 /**
  * Load the model from local assets offline
