@@ -1,5 +1,6 @@
 import * as faceapi from 'face-api.js';
 import { Camera, CameraDirection, CameraResultType, CameraSource } from '@capacitor/camera';
+import { faceApiAvailable } from './faceModel';
 
 /**
  * Capture a photo using @capacitor/camera
@@ -41,6 +42,26 @@ function loadImage(base64String: string): Promise<HTMLImageElement> {
 export async function preprocessImage(base64String: string): Promise<HTMLCanvasElement | null> {
   const img = await loadImage(base64String);
 
+  const canvas = document.createElement('canvas');
+  canvas.width = 224;
+  canvas.height = 224;
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('Failed to get 2D canvas context.');
+  }
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+
+  if (!faceApiAvailable) {
+    const size = Math.min(img.width, img.height);
+    const offsetX = (img.width - size) / 2;
+    const offsetY = (img.height - size) / 2;
+    ctx.drawImage(img, offsetX, offsetY, size, size, 0, 0, 224, 224);
+    return canvas;
+  }
+
   // Teachable Machine models are trained on 224x224 square images.
   // face-api.js detects the face bounding box first so TM only sees
   // the face — not background, clothing, or lighting.
@@ -69,17 +90,6 @@ export async function preprocessImage(base64String: string): Promise<HTMLCanvasE
   cropW = Math.min(size, img.width - cropX);
   cropH = Math.min(size, img.height - cropY);
 
-  const canvas = document.createElement('canvas');
-  canvas.width = 224;
-  canvas.height = 224;
-
-  const ctx = canvas.getContext('2d');
-  if (!ctx) {
-    throw new Error('Failed to get 2D canvas context.');
-  }
-
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, 224, 224);
 
   return canvas;

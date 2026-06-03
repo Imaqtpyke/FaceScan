@@ -31,7 +31,7 @@ import {
   stopMediaStream,
 } from './services/cameraStream';
 import { getScanHistory, saveScanResult, clearScanHistory, deleteScanResult } from './services/storage';
-import { classifyCanvas, loadAllModels, loadTeachableMachineModel } from './services/faceModel';
+import { classifyCanvas, loadAllModels, loadTeachableMachineModel, faceApiAvailable } from './services/faceModel';
 import { THRESHOLD_LABELS } from './config/thresholds';
 import { ClassBreakdown } from './components/ClassBreakdown';
 import { openAppSettings } from './utils/openAppSettings';
@@ -326,6 +326,9 @@ export default function App() {
   // Preprocesses and classifies captured Base64 image
   const processAndClassify = async (base64Data: string) => {
     setIsAnalyzing(true);
+    if (!faceApiAvailable) {
+      triggerToast('Face detection unavailable — using full image mode', 'info');
+    }
     try {
       const canvas = await preprocessImage(base64Data);
 

@@ -60,6 +60,8 @@ function buildClassificationResult(
   };
 }
 
+export let faceApiAvailable = true;
+
 let loadedModel: tmImage.CustomMobileNet | null = null;
 let faceApiModelsLoaded = false;
 let modelLoadingErrorOccurred = false;
@@ -68,8 +70,14 @@ const FACE_API_MODEL_URI = '/face-api-models/ssd_mobilenetv1';
 
 export async function loadFaceApiModels(): Promise<void> {
   if (faceApiModelsLoaded) return;
-  await faceapi.nets.ssdMobilenetv1.loadFromUri(FACE_API_MODEL_URI);
-  faceApiModelsLoaded = true;
+  try {
+    await faceapi.nets.ssdMobilenetv1.loadFromUri(FACE_API_MODEL_URI);
+    faceApiModelsLoaded = true;
+    faceApiAvailable = true;
+  } catch (err) {
+    console.error('Face detection model could not be loaded. Check public/face-api-models/ files.', err);
+    faceApiAvailable = false;
+  }
 }
 
 /** Load Teachable Machine + face-api.js SSD models (required before capture). */
@@ -104,7 +112,7 @@ export async function loadTeachableMachineModel(): Promise<tmImage.CustomMobileN
     loadedModel = await tmImage.loadFromFiles(modelFile, weightsFile, metadataFile);
     return loadedModel;
   } catch (err) {
-    console.error('Core TF.js of Teachable Machine model load failed:', err);
+    console.error('Recognition model could not be loaded. Check public/model/ files.', err);
     modelLoadingErrorOccurred = true;
     throw err;
   }
