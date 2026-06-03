@@ -33,7 +33,6 @@ import {
 import { getScanHistory, saveScanResult, clearScanHistory, deleteScanResult } from './services/storage';
 import { classifyCanvas, loadAllModels, loadTeachableMachineModel, faceApiAvailable } from './services/faceModel';
 import { THRESHOLD_LABELS } from './config/thresholds';
-import { ClassBreakdown } from './components/ClassBreakdown';
 import { openAppSettings } from './utils/openAppSettings';
 
 export default function App() {
@@ -1014,15 +1013,7 @@ export default function App() {
                     </div>
                   )}
 
-                  {activeResult.classPredictions &&
-                    activeResult.classPredictions.length > 0 &&
-                    activeResult.thresholds && (
-                      <ClassBreakdown
-                        predictions={activeResult.classPredictions}
-                        thresholds={activeResult.thresholds}
-                        topClassLabel={activeResult.topClassLabel}
-                      />
-                    )}
+
 
                   {/* Scanned Timestamp Metadata */}
                   <div className="flex items-center gap-1.5 justify-center text-xs text-[#94A3B8] font-mono select-none" id="scan-metadata-footer">
