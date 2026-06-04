@@ -31,7 +31,7 @@ import {
   stopMediaStream,
 } from './services/cameraStream';
 import { getScanHistory, saveScanResult, clearScanHistory, deleteScanResult } from './services/storage';
-import { classifyCanvas, loadAllModels, loadTeachableMachineModel, faceApiAvailable } from './services/faceModel';
+import { classifyCanvas, loadAllModels, loadTeachableMachineModel } from './services/faceModel';
 import { THRESHOLD_LABELS } from './config/thresholds';
 import { openAppSettings } from './utils/openAppSettings';
 
@@ -325,39 +325,8 @@ export default function App() {
   // Preprocesses and classifies captured Base64 image
   const processAndClassify = async (base64Data: string) => {
     setIsAnalyzing(true);
-    if (!faceApiAvailable) {
-      triggerToast('Face detection unavailable — using full image mode', 'info');
-    }
     try {
       const canvas = await preprocessImage(base64Data);
-
-      if (!canvas) {
-        const photoBase64 = base64Data.startsWith('data:')
-          ? base64Data
-          : `data:image/jpeg;base64,${base64Data}`;
-        const newResult: ScanResult = {
-          id: `scan_${Date.now()}`,
-          photoBase64,
-          name: 'No person or face detected.',
-          confidence: 0,
-          timestamp: getFormattedDate(),
-          status: 'error',
-          topClassLabel: 'Environment',
-          classPredictions: [],
-          thresholds: { ...THRESHOLD_LABELS },
-        };
-        try {
-          await saveScanResult(newResult);
-          const refreshed = await getScanHistory();
-          setHistoryList(refreshed);
-        } catch {
-          triggerToast('Could not save scan to history.', 'error');
-        }
-        setActiveResult(newResult);
-        setActiveScreen('results');
-        return;
-      }
-
       const preprocessedBase64 = canvasToBase64(canvas);
 
       // Classify using offline TM model (or fallback metrics helper)

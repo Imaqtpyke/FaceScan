@@ -1,4 +1,4 @@
-import * as faceapi from 'face-api.js';
+import * as tf from '@tensorflow/tfjs';
 import * as tmImage from '@teachablemachine/image';
 import personsData from '../data/persons.json';
 import { CONFIDENCE_THRESHOLDS, THRESHOLD_LABELS } from '../config/thresholds';
@@ -60,32 +60,26 @@ function buildClassificationResult(
   };
 }
 
-export let faceApiAvailable = true;
-
 let loadedModel: tmImage.CustomMobileNet | null = null;
-let faceApiModelsLoaded = false;
-let modelLoadingErrorOccurred = false;
+let tfBackendReady = false;
 
-const FACE_API_MODEL_URI = '/face-api-models/ssd_mobilenetv1';
-
-export async function loadFaceApiModels(): Promise<void> {
-  if (faceApiModelsLoaded) return;
-  const modelUrl = `${window.location.origin}/face-api-models/ssd_mobilenetv1`;
-  console.log('Loading face-api from:', modelUrl);
+/** Ensure TF.js is using the CPU backend (works in all Android WebViews). */
+async function ensureTfBackend(): Promise<void> {
+  if (tfBackendReady) return;
   try {
-    await faceapi.nets.ssdMobilenetv1.loadFromUri(modelUrl);
-    console.log('face-api loaded successfully');
-    faceApiModelsLoaded = true;
-    faceApiAvailable = true;
+    await tf.setBackend('cpu');
+    await tf.ready();
+    console.log('TF.js backend ready:', tf.getBackend());
+    tfBackendReady = true;
   } catch (err) {
-    console.error('face-api load failed:', err);
-    faceApiAvailable = false;
+    console.error('TF.js backend init failed:', err);
+    throw err;
   }
 }
 
-/** Load Teachable Machine + face-api.js SSD models (required before capture). */
+/** Load Teachable Machine model (required before capture). */
 export async function loadAllModels(): Promise<void> {
-  await Promise.all([loadTeachableMachineModel(), loadFaceApiModels()]);
+  await loadTeachableMachineModel();
 }
 
 /**
@@ -94,8 +88,9 @@ export async function loadAllModels(): Promise<void> {
 export async function loadTeachableMachineModel(): Promise<tmImage.CustomMobileNet> {
   if (loadedModel) return loadedModel;
 
+  await ensureTfBackend();
+
   try {
-    // Resolve asset URLs utilizing Vite's ?url syntax
     const modelResponse = await fetch(modelUrl);
     if (!modelResponse.ok) throw new Error(`Failed to fetch model.json: ${modelResponse.statusText}`);
     const modelBlob = await modelResponse.blob();
@@ -111,12 +106,11 @@ export async function loadTeachableMachineModel(): Promise<tmImage.CustomMobileN
     const weightsBlob = await weightsResponse.blob();
     const weightsFile = new File([weightsBlob], 'weights.bin', { type: 'application/octet-stream' });
 
-    // Load local files into Teachable Machine
     loadedModel = await tmImage.loadFromFiles(modelFile, weightsFile, metadataFile);
+    console.log('Teachable Machine model loaded successfully');
     return loadedModel;
   } catch (err) {
     console.error('Recognition model could not be loaded. Check public/model/ files.', err);
-    modelLoadingErrorOccurred = true;
     throw err;
   }
 }
@@ -126,7 +120,6 @@ export async function loadTeachableMachineModel(): Promise<tmImage.CustomMobileN
  * into their name and studentID fields.
  */
 export function parseLabel(label: string): { name: string; studentId?: string } {
-  // Pattern: "John Doe (ID: 2021-00123)"
   const match = label.match(/^([^(]+)(?:\(ID:\s*([^)]+)\))?/);
   if (match) {
     const name = match[1].trim();
@@ -185,29 +178,21 @@ export function resolvePrediction(classLabel: string, probability: number): Reso
 }
 
 /**
- * Classifies an image rendered on a canvas.
- * Falls back gracefully to visual heuristic simulation if WebGL is unavailable or isolated.
+ * Classifies an image rendered on a 224×224 canvas using the TM model.
  */
 export async function classifyCanvas(canvas: HTMLCanvasElement): Promise<ClassificationResult> {
-  try {
-    const model = await loadTeachableMachineModel();
-    
-    // Perform standard prediction using Teachable Machine
-    console.log('Calling TM model.predict()...');
-    const predictions = await model.predict(canvas);
-    console.log('TM predictions:', JSON.stringify(predictions));
-    
-    // Sort descending by probability
-    predictions.sort((a, b) => b.probability - a.probability);
-    
-    const topPrediction = predictions[0];
-    return buildClassificationResult(
-      topPrediction.className,
-      topPrediction.probability,
-      predictions
-    );
-  } catch (err) {
-    console.error('Prediction error inside TFJS:', err);
-    throw err;
-  }
+  const model = await loadTeachableMachineModel();
+
+  console.log('Calling TM model.predict()...');
+  const predictions = await model.predict(canvas);
+  console.log('TM predictions:', JSON.stringify(predictions));
+
+  predictions.sort((a, b) => b.probability - a.probability);
+
+  const topPrediction = predictions[0];
+  return buildClassificationResult(
+    topPrediction.className,
+    topPrediction.probability,
+    predictions
+  );
 }
