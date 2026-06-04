@@ -26,7 +26,7 @@ export interface ClassificationResult extends ResolvedMatch {
 
 function mapToClassScore(classLabel: string, probability: number): ClassPredictionScore {
   const confidence = Math.round(probability * 100);
-  if (classLabel === 'Environment') {
+  if (classLabel === 'Class 31') {
     return {
       classLabel,
       displayName: 'Environment (no face)',
@@ -70,12 +70,15 @@ const FACE_API_MODEL_URI = '/face-api-models/ssd_mobilenetv1';
 
 export async function loadFaceApiModels(): Promise<void> {
   if (faceApiModelsLoaded) return;
+  const modelUrl = `${window.location.origin}/face-api-models/ssd_mobilenetv1`;
+  console.log('Loading face-api from:', modelUrl);
   try {
-    await faceapi.nets.ssdMobilenetv1.loadFromUri(FACE_API_MODEL_URI);
+    await faceapi.nets.ssdMobilenetv1.loadFromUri(modelUrl);
+    console.log('face-api loaded successfully');
     faceApiModelsLoaded = true;
     faceApiAvailable = true;
   } catch (err) {
-    console.error('Face detection model could not be loaded. Check public/face-api-models/ files.', err);
+    console.error('face-api load failed:', err);
     faceApiAvailable = false;
   }
 }
@@ -143,7 +146,7 @@ export function resolvePrediction(classLabel: string, probability: number): Reso
   const lowThreshold = CONFIDENCE_THRESHOLDS.LOW * 100;
 
   // State C: Environment class → always no-detection, regardless of confidence
-  if (classLabel === 'Environment') {
+  if (classLabel === 'Class 31') {
     return {
       name: 'No person or face detected.',
       confidence: confidence,
@@ -190,7 +193,9 @@ export async function classifyCanvas(canvas: HTMLCanvasElement): Promise<Classif
     const model = await loadTeachableMachineModel();
     
     // Perform standard prediction using Teachable Machine
+    console.log('Calling TM model.predict()...');
     const predictions = await model.predict(canvas);
+    console.log('TM predictions:', JSON.stringify(predictions));
     
     // Sort descending by probability
     predictions.sort((a, b) => b.probability - a.probability);
@@ -202,46 +207,7 @@ export async function classifyCanvas(canvas: HTMLCanvasElement): Promise<Classif
       predictions
     );
   } catch (err) {
-    console.warn('Prediction error inside TFJS, switching to visual fallback heuristics.');
-    
-    // Visual analyzer fallback in sandbox where webgl / multi-threading layers fail:
-    // We compute basic canvas metrics (average color / brightness) for realistic output varieties
-    const ctx = canvas.getContext('2d');
-    if (!ctx) {
-      throw new Error('Canvas context unavailable');
-    }
-    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    let r = 0, g = 0, b = 0;
-    
-    for (let i = 0; i < imgData.data.length; i += 40) {
-      r += imgData.data[i];
-      g += imgData.data[i+1];
-      b += imgData.data[i+2];
-    }
-    const totalCount = imgData.data.length / 40;
-    const avgR = r / totalCount;
-    const avgG = g / totalCount;
-    const avgB = b / totalCount;
-    
-    // Deterministic simulation based on color palette to allow predictable web tests
-    const colorHeuristic = Math.round(avgR + avgG + avgB) % 3;
-
-    const fallbackPredictions = [
-      { className: 'Cedrick Ari', probability: 0.94 },
-      { className: 'Rica Jean Ordoras', probability: 0.68 },
-      { className: 'Environment', probability: 0.34 },
-    ];
-    const top =
-      colorHeuristic === 0
-        ? fallbackPredictions[0]
-        : colorHeuristic === 1
-          ? fallbackPredictions[1]
-          : fallbackPredictions[2];
-
-    return buildClassificationResult(
-      top.className,
-      top.probability,
-      fallbackPredictions
-    );
+    console.error('Prediction error inside TFJS:', err);
+    throw err;
   }
 }
