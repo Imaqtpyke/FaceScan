@@ -26,7 +26,7 @@ export interface ClassificationResult extends ResolvedMatch {
 
 function mapToClassScore(classLabel: string, probability: number): ClassPredictionScore {
   const confidence = Math.round(probability * 100);
-  if (classLabel === 'Class 31') {
+  if (classLabel === 'Environment') {
     return {
       classLabel,
       displayName: 'Environment (no face)',
@@ -146,7 +146,7 @@ export function resolvePrediction(classLabel: string, probability: number): Reso
   const lowThreshold = CONFIDENCE_THRESHOLDS.LOW * 100;
 
   // State C: Environment class → always no-detection, regardless of confidence
-  if (classLabel === 'Class 31') {
+  if (classLabel === 'Environment') {
     return {
       name: 'No person or face detected.',
       confidence: confidence,
